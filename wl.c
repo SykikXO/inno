@@ -1,12 +1,14 @@
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb/stb_image.h"
 #include "xdg-shell-client-protocol.h"
 #include "xdg-shell-protocol.c"
 #include <fcntl.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 #include <wayland-client-core.h>
 #include <wayland-client-protocol.h>
@@ -20,8 +22,8 @@ struct wl_buffer *bfr;
 struct wl_shm *shm;
 
 uint8_t *pixl;
-uint16_t w = 200;
-uint16_t h = 100;
+uint16_t w = 640;
+uint16_t h = 480;
 
 int32_t allocate_shm(uint64_t size) {
   int8_t name[8];
@@ -44,16 +46,49 @@ void resz() {
   wl_shm_pool_destroy(pool);
   close(fd);
 }
-void draw() {}
+void draw() {
+  memset(pixl, 255, h * w * 4);
+  wl_surface_attach(surf, bfr, 0, 0);
+  wl_surface_damage_buffer(surf, 0, 0, w, h);
+  wl_surface_commit(surf);
+}
+void draw_img() {
+  int imgw, imgh, channel;
+  const char *imgpath = "/home/sykik/.config/walls/0001.jpg";
+  uint8_t *img = stbi_load(imgpath, &imgw, &imgh, &channel, 4);
+  if (!img) {
+    fprintf(stderr, "Image failed to load: %s\n", imgpath);
+    return;
+  }
+  for (int y = 0; y < h; y++) {
+    for (int x = 0; x < w; x++) {
+      uint8_t *s = img + 4 * (y * imgw + x);
+      uint8_t *d = pixl + 4 * (y * w + x);
+      d[0] = s[0];
+      d[1] = s[1];
+      d[2] = s[2];
+      d[3] = s[3];
+    }
+  }
+  stbi_image_free(img);
+  wl_surface_attach(surf, bfr, 0, 0);
+  wl_surface_damage_buffer(surf, 0, 0, w, h);
+  wl_surface_commit(surf);
+}
+struct wl_callback_listener cb_list;
+void frame_new(void *data, struct wl_callback *cb, uint32_t a) {
+  wl_callback_destroy(cb);
+  cb = wl_surface_frame(surf);
+  wl_callback_add_listener(cb, &cb_list, 0);
+  draw_img();
+}
+struct wl_callback_listener cb_list = {.done = frame_new};
 void xsurf_conf(void *data, struct xdg_surface *xsurf, uint32_t ser) {
   xdg_surface_ack_configure(xsurf, ser);
   if (!pixl) {
     resz();
   }
-  draw();
-  wl_surface_attach(surf, bfr, 0, 0);
-  wl_surface_damage_buffer(surf, 0, 0, w, h);
-  wl_surface_commit(surf);
+  draw_img();
 }
 void sh_ping(void *data, struct xdg_wm_base *sh, uint32_t ser) {
   xdg_wm_base_pong(sh, ser);
@@ -87,6 +122,8 @@ int main() {
   wl_registry_add_listener(reg, &reg_list, 0);
   wl_display_roundtrip(disp);
   surf = wl_compositor_create_surface(comp);
+  struct wl_callback *cb = wl_surface_frame(surf);
+  wl_callback_add_listener(cb, &cb_list, 0);
   struct xdg_surface *xsurf = xdg_wm_base_get_xdg_surface(sh, surf);
   xdg_surface_add_listener(xsurf, &xsurf_list, 0);
   top = xdg_surface_get_toplevel(xsurf);
@@ -99,6 +136,8 @@ int main() {
   if (bfr) {
     wl_buffer_destroy(bfr);
   }
+  xdg_toplevel_destroy(top);
+  xdg_surface_destroy(xsurf);
   wl_surface_destroy(surf);
   wl_display_disconnect(disp);
   return 0;
