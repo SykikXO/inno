@@ -22,8 +22,8 @@ struct wl_buffer *bfr;
 struct wl_shm *shm;
 
 uint8_t *pixl;
-uint16_t w = 640;
-uint16_t h = 480;
+uint16_t w = 117;
+uint16_t h = 150;
 
 int32_t allocate_shm(uint64_t size) {
   int8_t name[8];
@@ -54,20 +54,21 @@ void draw() {
 }
 void draw_img() {
   int imgw, imgh, channel;
-  const char *imgpath = "/home/sykik/.config/walls/0001.jpg";
-  uint8_t *img = stbi_load(imgpath, &imgw, &imgh, &channel, 4);
+  const char *imgpath = "/home/sykik/Downloads/wayland.png";
+  unsigned char *img = stbi_load(imgpath, &imgw, &imgh, &channel, 4);
   if (!img) {
     fprintf(stderr, "Image failed to load: %s\n", imgpath);
     return;
   }
+  int x = 0;
   for (int y = 0; y < h; y++) {
     for (int x = 0; x < w; x++) {
       uint8_t *s = img + 4 * (y * imgw + x);
       uint8_t *d = pixl + 4 * (y * w + x);
-      d[0] = s[0];
-      d[1] = s[1];
-      d[2] = s[2];
-      d[3] = s[3];
+      d[0] = s[1];
+      d[1] = s[2];
+      d[2] = s[3];
+      d[3] = s[0];
     }
   }
   stbi_image_free(img);
