@@ -10,7 +10,7 @@ wayland-scanner private-code /usr/share/wayland-protocols/stable/xdg-shell/xdg-s
 
 use commands to generate xdg-shell-client-protocol.h and xdg-shell-protocol.c in current directory.
 
-then compile using : "gcc -o execthis main.c -lwayland-client -lm"
+then compile using make in projects root directory.
 
 references:
 https://www.youtube.com/watch?v=iIVIu7YRdY0
