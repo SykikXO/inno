@@ -1,9 +1,8 @@
-
 CC = gcc
-CFLAGS = -I. -Wall
-LDFLAGS = -lwayland-client -lm -lpthread
+CFLAGS = -I. -Wall $(shell pkg-config --cflags cairo)
+LDFLAGS = -lwayland-client -lm -lpthread $(shell pkg-config --libs cairo)
 
-SRC = main.c wayland_init.c render.c image.c xdg-shell-protocol.c
+SRC = main.c wayland_init.c render.c cairo_image.c image.c xdg-shell-protocol.c
 OBJ = $(SRC:.c=.o)
 TARGET = execthis
 

@@ -1,6 +1,8 @@
+#include "cairo_image.h"
 #include "image.h"
 #include "render.h"
 #include "stb/stb_image.h"
+#include "string.h"
 #include "wayland_init.h"
 #include "xdg-shell-client-protocol.h"
 #include <stdio.h>
@@ -53,9 +55,27 @@ int main() {
   struct xdg_wm_base_listener sh_list = {.ping = sh_ping};
   xdg_wm_base_add_listener(wl.wm_base, &sh_list, NULL);
 
-  create_buffer(wl.shm, &buffer, 800, 600);
-  load_image("/home/sykik/.config/walls/catpuccin_samurai.png", buffer.pixels,
-             800, 600);
+  // cairo image/text rendering logic
+  struct CairoImage cairo_image;
+  if (load_cairo_image("/home/sykik/.config/walls/catpuccin_samurai.png",
+                       &cairo_image) < 0) {
+    fprintf(stderr, "Failed to load Cairo image\n");
+    return -1;
+  }
+  // Use cairo_image.data as the buffer for wl_surface_attach or copy into shm
+  // buffer
+  create_buffer(wl.shm, &buffer, cairo_image.width, cairo_image.height);
+  wl_surface_attach(surface, buffer.buffer, 0, 0);
+  // Assuming buffer.pixel points to shared memory,
+  // copy cairo_image.data pixel-by-pixel into buffer.pixel here before
+  // attaching
+  memcpy(buffer.pixels, cairo_image.data,
+         cairo_image.width * cairo_image.height * 4); // RGBA 4 bytes per px
+
+  // load image logic
+  // load_image("/home/sykik/.config/walls/catpuccin_samurai.png",
+  // buffer.pixels,
+  //           800, 600);
 
   // Initial surface commit with buffer attached
   wl_surface_attach(surface, buffer.buffer, 0, 0);
@@ -80,7 +100,8 @@ int main() {
       break;
     } else if (ret > 0) {
       if (fds.revents & POLLIN) {
-        // Blocking call: read and dispatch all available Wayland events
+        // Blocking call: read and dispatch all available Wayland
+        // events
         if (wl_display_dispatch(wl.display) == -1) {
           fprintf(stderr, "Wayland connection closed\n");
           break;
@@ -93,7 +114,7 @@ int main() {
     }
     wl_display_flush(wl.display);
   }
-
+  destroy_cairo_image(&cairo_image);
   destroy_buffer(&buffer);
   wayland_cleanup(&wl);
   return 0;
