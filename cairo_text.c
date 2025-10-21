@@ -1,10 +1,12 @@
 #include "cairo_text.h"
+#include <cairo/cairo.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-int render_cairo_text(const char *text, struct CairoText *ct) {
-  ct->width = 800;
-  ct->height = 600;
+int render_cairo_text(const char *text, struct CairoText *ct, int *w, int *h) {
+  ct->width = *w;
+  ct->height = *h;
 
   // Create an ARGB Cairo surface for drawing
   ct->surface =
@@ -15,18 +17,23 @@ int render_cairo_text(const char *text, struct CairoText *ct) {
 
   cairo_t *cr = cairo_create(ct->surface);
 
-  // Background color (light grey)
-  cairo_set_source_rgb(cr, 0.9, 0.9, 0.9);
+  // Background color (black)
+  // cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
+  // cairo_paint(cr);
+
+  // transaprent
+  cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
   cairo_paint(cr);
+  cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
 
   // Set text properties
-  cairo_set_source_rgb(cr, 0.1, 0.2, 0.6); // text color
-  cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
+  cairo_set_source_rgb(cr, 0.3, 0.9, 0.6); // text color
+  cairo_select_font_face(cr, "Iosevka NFM", CAIRO_FONT_SLANT_ITALIC,
                          CAIRO_FONT_WEIGHT_BOLD);
-  cairo_set_font_size(cr, 48);
+  cairo_set_font_size(cr, 24);
 
   // Move and draw text
-  cairo_move_to(cr, 100, 300);
+  cairo_move_to(cr, 0, *h);
   cairo_show_text(cr, text);
 
   cairo_destroy(cr);

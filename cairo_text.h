@@ -1,4 +1,3 @@
-
 #ifndef CAIRO_TEXT_H
 #define CAIRO_TEXT_H
 
@@ -11,7 +10,7 @@ struct CairoText {
   cairo_surface_t *surface;
 };
 
-int render_cairo_text(const char *text, struct CairoText *ct);
+int render_cairo_text(const char *text, struct CairoText *ct, int *w, int *h);
 void destroy_cairo_text(struct CairoText *ct);
 
 #endif

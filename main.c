@@ -60,7 +60,9 @@ int main() {
   // cairo text rendering logic
   struct CairoText cairo_text;
   const char *text = "Hello, World!";
-  if (render_cairo_text(text, &cairo_text) < 0) {
+  int h = 24;
+  int w = strlen(text) * 12;
+  if (render_cairo_text(text, &cairo_text, &w, &h) < 0) {
     fprintf(stderr, "Failed to render cairo text\n");
     return -1;
   }
