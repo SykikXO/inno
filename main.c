@@ -1,4 +1,5 @@
 #include "cairo_image.h"
+#include "cairo_text.h"
 #include "image.h"
 #include "render.h"
 #include "stb/stb_image.h"
@@ -9,6 +10,7 @@
 #include <stdlib.h>
 #include <sys/poll.h>
 #include <unistd.h>
+#include <wayland-client-protocol.h>
 
 // Global variables (or wrap in a struct as needed)
 struct WaylandState wl;
@@ -55,22 +57,32 @@ int main() {
   struct xdg_wm_base_listener sh_list = {.ping = sh_ping};
   xdg_wm_base_add_listener(wl.wm_base, &sh_list, NULL);
 
-  // cairo image/text rendering logic
-  struct CairoImage cairo_image;
-  if (load_cairo_image("/home/sykik/.config/walls/catpuccin_samurai.png",
-                       &cairo_image) < 0) {
-    fprintf(stderr, "Failed to load Cairo image\n");
+  // cairo text rendering logic
+  struct CairoText cairo_text;
+  const char *text = "Hello, World!";
+  if (render_cairo_text(text, &cairo_text) < 0) {
+    fprintf(stderr, "Failed to render cairo text\n");
     return -1;
   }
+  create_buffer(wl.shm, &buffer, cairo_text.width, cairo_text.height);
+  wl_surface_attach(surface, buffer.buffer, 0, 0);
+  memcpy(buffer.pixels, cairo_text.data,
+         cairo_text.width * cairo_text.height * 4);
+
+  // if (load_cairo_image("/home/sykik/.config/walls/catpuccin_samurai.png",
+  //                     &cairo_image) < 0) {
+  //  fprintf(stderr, "Failed to load Cairo image\n");
+  //  return -1;
+  //}
   // Use cairo_image.data as the buffer for wl_surface_attach or copy into shm
   // buffer
-  create_buffer(wl.shm, &buffer, cairo_image.width, cairo_image.height);
-  wl_surface_attach(surface, buffer.buffer, 0, 0);
+  // create_buffer(wl.shm, &buffer, cairo_image.width, cairo_image.height);
+  // wl_surface_attach(surface, buffer.buffer, 0, 0);
   // Assuming buffer.pixel points to shared memory,
   // copy cairo_image.data pixel-by-pixel into buffer.pixel here before
   // attaching
-  memcpy(buffer.pixels, cairo_image.data,
-         cairo_image.width * cairo_image.height * 4); // RGBA 4 bytes per px
+  // memcpy(buffer.pixels, cairo_image.data,
+  //       cairo_image.width * cairo_image.height * 4); // RGBA 4 bytes per px
 
   // load image logic
   // load_image("/home/sykik/.config/walls/catpuccin_samurai.png",
@@ -114,7 +126,8 @@ int main() {
     }
     wl_display_flush(wl.display);
   }
-  destroy_cairo_image(&cairo_image);
+  destroy_cairo_text(&cairo_text);
+  // destroy_cairo_image(&cairo_image);
   destroy_buffer(&buffer);
   wayland_cleanup(&wl);
   return 0;
