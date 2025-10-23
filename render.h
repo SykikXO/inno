@@ -1,4 +1,3 @@
-
 #pragma once
 #include <stdint.h>
 #include <wayland-client.h>

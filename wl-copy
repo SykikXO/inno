@@ -17,14 +17,14 @@ int render_cairo_text(const char *text, struct CairoText *ct, int *w, int *h) {
 
   cairo_t *cr = cairo_create(ct->surface);
 
-  // Background color
-  cairo_set_source_rgb(cr, 0.2, 0.2, 0.2);
-  cairo_paint(cr);
+  // Background color (black)
+  // cairo_set_source_rgb(cr, 0.0, 0.0, 0.0);
+  // cairo_paint(cr);
 
   // transaprent
-  // cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
-  // cairo_paint(cr);
-  // cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+  cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+  cairo_paint(cr);
+  cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
 
   // Set text properties
   cairo_set_source_rgb(cr, 0.3, 0.9, 0.6); // text color
