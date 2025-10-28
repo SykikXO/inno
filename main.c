@@ -24,7 +24,8 @@ uint32_t width = 400;
 uint32_t height = 300;
 static struct zwlr_layer_surface_v1 *layer_surface = NULL;
 static struct CairoText cairo_text;
-char *text_string = "Hello, World!";
+
+int h, w;
 
 // Registry listener binds required globals to wl struct and layer_shell
 static void registry_handle_global(void *data, struct wl_registry *registry,
@@ -59,22 +60,19 @@ static void layer_surface_handle_configure(
     void *data, struct zwlr_layer_surface_v1 *layer_surface_param,
     uint32_t serial, uint32_t new_width, uint32_t new_height) {
 
+  const char *text_string = (const char *)data;
   zwlr_layer_surface_v1_ack_configure(layer_surface_param, serial);
 
   if (new_width == 0 || new_height == 0)
     return;
-
-  // Update width and height globals
   width = new_width;
   height = new_height;
 
-  // Cleanup old buffer if exists
   if (render_buffer.buffer)
     destroy_buffer(&render_buffer);
 
   create_buffer(wl.shm, &render_buffer, width, height);
-  int h = height;
-  int w = width;
+
   if (render_cairo_text(text_string, &cairo_text, &w, &h) == 0) {
     memcpy(render_buffer.pixels, cairo_text.data, w * h * 4);
   } else {
@@ -107,7 +105,24 @@ void frame_done(void *data, struct wl_callback *callback, uint32_t time) {
   wl_surface_commit(surface);
 }
 
-int main() {
+void layer_startup(int x, int y, char *text_string) {
+  layer_surface = zwlr_layer_shell_v1_get_layer_surface(
+      layer_shell, surface, NULL, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY,
+      "simple_white_window");
+
+  zwlr_layer_surface_v1_add_listener(layer_surface, &layer_surface_listener,
+                                     (void *)text_string);
+
+  zwlr_layer_surface_v1_set_anchor(layer_surface,
+                                   ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
+                                       ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
+
+  zwlr_layer_surface_v1_set_margin(layer_surface, 0, 0, 0, 0);
+  zwlr_layer_surface_v1_set_exclusive_zone(layer_surface, 0);
+  zwlr_layer_surface_v1_set_size(layer_surface, x, y);
+  wl_surface_commit(surface);
+}
+int display_handle() {
   wl.display = wl_display_connect(NULL);
   if (!wl.display) {
     fprintf(stderr, "Failed to connect to Wayland display\n");
@@ -128,30 +143,32 @@ int main() {
     fprintf(stderr, "Failed to create surface\n");
     return -1;
   }
+  return 0;
+}
+void cleanup() {
+  destroy_cairo_text(&cairo_text);
+  destroy_buffer(&render_buffer);
+  wayland_cleanup(&wl);
+}
 
-  layer_surface = zwlr_layer_shell_v1_get_layer_surface(
-      layer_shell, surface, NULL, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY,
-      "simple_white_window");
+int main(int argc, char *argv[]) {
+  if (display_handle() == -1)
+    return -1;
+  char *text_string;
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "-c") == 0) {
+      text_string = "Charger Connected";
+    } else if (strcmp(argv[i], "-d") == 0) {
+      text_string = "Charger Disconnected";
+    } else {
+      text_string = "Hello world!";
+    }
+  }
+  render_cairo_text(text_string, &cairo_text, &w, &h);
+  layer_startup(w, h, text_string);
 
-  zwlr_layer_surface_v1_add_listener(layer_surface, &layer_surface_listener,
-                                     NULL);
-
-  // Key fix: anchor both left and right edges for zero x offset
-  zwlr_layer_surface_v1_set_anchor(layer_surface,
-                                   ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
-                                       ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
-                                       ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
-                                       ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
-
-  zwlr_layer_surface_v1_set_margin(layer_surface, 0, 0, 0, 0);
-  zwlr_layer_surface_v1_set_exclusive_zone(layer_surface, -1);
-  zwlr_layer_surface_v1_set_size(layer_surface, 156, 24);
-  wl_surface_commit(surface);
-
-  // Setup initial frame callback listener
   struct wl_callback *callback = wl_surface_frame(surface);
   wl_callback_add_listener(callback, &callback_listener, NULL);
-
   int wl_fd = wl_display_get_fd(wl.display);
   struct pollfd fds = {.fd = wl_fd, .events = POLLIN};
 
@@ -171,8 +188,6 @@ int main() {
     }
     wl_display_flush(wl.display);
   }
-  destroy_cairo_text(&cairo_text);
-  destroy_buffer(&render_buffer);
-  wayland_cleanup(&wl);
+  cleanup();
   return 0;
 }
