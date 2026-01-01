@@ -282,3 +282,11 @@ Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedes
 Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
 Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /media_player4
 Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_EA_79_F3_9F_FD_D7/sep1/fd0
+Signal: org.freedesktop.DBus : NameAcquired | Path: /org/freedesktop/DBus
+Signal: org.freedesktop.DBus.ObjectManager : InterfacesRemoved | Path: /
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Debug: Parsed Percentage: 68.00 (Type: d)
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Debug: Parsed Percentage: 68.00 (Type: d)
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0

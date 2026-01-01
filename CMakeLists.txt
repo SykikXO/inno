@@ -3,8 +3,8 @@ project(inno C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
-add_compile_options(-g -fsanitize=address)
-add_link_options(-fsanitize=address)
+# add_compile_options(-g -fsanitize=address)
+# add_link_options(-fsanitize=address)
 
 # Find PkgConfig
 find_package(PkgConfig REQUIRED)
@@ -88,3 +88,6 @@ target_link_libraries(inno
     m 
     rt
 )
+
+# Install
+install(TARGETS inno DESTINATION bin)
