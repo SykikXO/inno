@@ -1,0 +1,3 @@
+/home/sykik/Dev/dum/CMakeFiles/inno.dir
+/home/sykik/Dev/dum/CMakeFiles/edit_cache.dir
+/home/sykik/Dev/dum/CMakeFiles/rebuild_cache.dir

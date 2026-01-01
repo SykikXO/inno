@@ -30,10 +30,17 @@ int create_buffer(struct wl_shm *shm, struct RenderBuffer *out, uint16_t width,
 
   out->width = width;
   out->height = height;
+  out->size = size;
   return 0;
 }
 
 void destroy_buffer(struct RenderBuffer *buf) {
   if (buf->buffer)
     wl_buffer_destroy(buf->buffer);
+  if (buf->pixels && buf->pixels != MAP_FAILED) {
+    munmap(buf->pixels, buf->size);
+  }
+  buf->buffer = NULL;
+  buf->pixels = NULL;
+  buf->size = 0;
 }

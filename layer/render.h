@@ -7,6 +7,7 @@ struct RenderBuffer {
   uint8_t *pixels;
   uint16_t width;
   uint16_t height;
+  size_t size;
 };
 
 int create_buffer(struct wl_shm *shm, struct RenderBuffer *out, uint16_t width,

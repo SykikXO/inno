@@ -1,17 +1,40 @@
-# inno
+# Inno Notification Agent
 
-a extremely lightweight notification agent, writted in c
-made to provide low battery, charging, full charge, device connected(ble/usb),
-device disconnected notifs.
+Inno is a lightweight, event-driven notification agent for Wayland, written in C. It listens for DBus events (like Battery Charging/Discharging) and displays non-intrusive notifications on your desktop.
 
-usage : 
-wayland-scanner client-header /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml xdg-shell-client-protocol.h
-wayland-scanner private-code /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml xdg-shell-protocol.c
+## Installation
 
-use commands to generate xdg-shell-client-protocol.h and xdg-shell-protocol.c in current directory.
+### Arch Linux (PKGBUILD)
+Build and install using makepkg:
+```bash
+makepkg -si
+```
 
-then compile using make in projects root directory.
+### Manual Build
+Requirements: `cmake`, `make`, `gcc`, `wayland`, `cairo`, `dbus`, `wayland-protocols`.
 
-references:
-https://www.youtube.com/watch?v=iIVIu7YRdY0
-https://www.youtube.com/watch?v=lw4P1Oup5LQ
+```bash
+cmake -B build
+cmake --build build
+sudo cp build/inno /usr/bin/
+```
+
+## Configuration
+
+Create a config file at `~/.config/inno/inno.conf`:
+
+```ini
+font=Iosevka NFM
+text_color=#FF00FF00  # Green (ARGB)
+bg_color=#AA000000    # Semi-transparent Black (ARGB)
+```
+
+- **font**: Font family name (must be installed).
+- **text_color/bg_color**: Hex format `#AARRGGBB` (Alpha, Red, Green, Blue).
+
+## Usage
+
+Run `inno` in your startup script or terminal:
+```bash
+inno &
+```

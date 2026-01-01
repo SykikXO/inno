@@ -1,0 +1,284 @@
+Signal: org.freedesktop.DBus : NameAcquired | Path: /org/freedesktop/DBus
+Signal: org.freedesktop.DBus.ObjectManager : InterfacesRemoved | Path: /
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Signal: org.freedesktop.DBus : NameAcquired | Path: /org/freedesktop/DBus
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower
+Signal: org.freedesktop.DBus : NameAcquired | Path: /org/freedesktop/DBus
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Debug: Parsed State: 2
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Debug: Parsed State: 2
+Signal: org.freedesktop.DBus : NameAcquired | Path: /org/freedesktop/DBus
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Debug: Parsed State: 2
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Debug: Parsed State: 2
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/line_power_ADP1
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Debug: Parsed State: 1
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Debug: Parsed State: 1
+Signal: org.freedesktop.DBus : NameAcquired | Path: /org/freedesktop/DBus
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/line_power_ADP1
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Debug: Parsed State: 1
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Debug: Parsed State: 1
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/line_power_ADP1
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_EA_79_F3_9F_FD_D7/sep1/fd0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /media_player4
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Signal: org.freedesktop.DBus.ObjectManager : InterfacesAdded | Path: /
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Debug: Parsed Percentage: 51.00 (Type: d)
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Debug: Parsed Percentage: 51.00 (Type: d)
+Signal: org.freedesktop.DBus : NameAcquired | Path: /org/freedesktop/DBus
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_BC_C7_DA_94_DD_0B
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_BC_C7_DA_94_DD_0B
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Debug: Parsed State: 2
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Debug: Parsed State: 2
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/line_power_ADP1
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Debug: Parsed State: 1
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Debug: Parsed State: 1
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/line_power_ADP1
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_EA_79_F3_9F_FD_D7/sep1/fd0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /media_player4
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0
+Signal: org.freedesktop.DBus.ObjectManager : InterfacesRemoved | Path: /
+Signal: org.freedesktop.DBus.ObjectManager : InterfacesAdded | Path: /
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Debug: Parsed State: 2
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Debug: Parsed State: 2
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /media_player4
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_EA_79_F3_9F_FD_D7/sep1/fd0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/line_power_ADP1
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Debug: Parsed State: 1
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Debug: Parsed State: 1
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/line_power_ADP1
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_BC_C7_DA_94_DD_0B
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.ObjectManager : InterfacesRemoved | Path: /
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Debug: Parsed Percentage: 54.00 (Type: d)
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Debug: Parsed Percentage: 54.00 (Type: d)
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/timesync1
+Signal: org.freedesktop.DBus : NameAcquired | Path: /org/freedesktop/DBus
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_BC_C7_DA_94_DD_0B
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Debug: Parsed State: 2
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Debug: Parsed State: 2
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/line_power_ADP1
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.ObjectManager : InterfacesRemoved | Path: /
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Debug: Parsed State: 1
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Debug: Parsed State: 1
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/line_power_ADP1
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_EA_79_F3_9F_FD_D7/sep1/fd0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /media_player4
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0
+Signal: org.freedesktop.DBus.ObjectManager : InterfacesAdded | Path: /
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Signal: org.freedesktop.DBus.ObjectManager : InterfacesAdded | Path: /
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_BC_C7_DA_94_DD_0B
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_BC_C7_DA_94_DD_0B
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_BC_C7_DA_94_DD_0B
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_BC_C7_DA_94_DD_0B
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /media_player4
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_EA_79_F3_9F_FD_D7/sep1/fd0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_EA_79_F3_9F_FD_D7/sep1/fd0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /media_player4
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Debug: Parsed Percentage: 56.00 (Type: d)
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Debug: Parsed Percentage: 56.00 (Type: d)
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /media_player4
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_EA_79_F3_9F_FD_D7/sep1/fd0
+Signal: org.freedesktop.DBus.ObjectManager : InterfacesRemoved | Path: /
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Debug: Parsed Percentage: 57.00 (Type: d)
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Debug: Parsed Percentage: 57.00 (Type: d)
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_EA_79_F3_9F_FD_D7/sep1/fd0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /media_player4
+Signal: org.freedesktop.DBus.ObjectManager : InterfacesAdded | Path: /
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_BC_C7_DA_94_DD_0B
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_BC_C7_DA_94_DD_0B
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /media_player4
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_EA_79_F3_9F_FD_D7/sep1/fd0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Signal: org.freedesktop.DBus.ObjectManager : InterfacesRemoved | Path: /
+Signal: org.freedesktop.DBus.ObjectManager : InterfacesAdded | Path: /
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Debug: Parsed Percentage: 58.00 (Type: d)
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Debug: Parsed Percentage: 58.00 (Type: d)
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_BC_C7_DA_94_DD_0B
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_BC_C7_DA_94_DD_0B
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_BC_C7_DA_94_DD_0B
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_BC_C7_DA_94_DD_0B
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Debug: Parsed Percentage: 59.00 (Type: d)
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Debug: Parsed Percentage: 59.00 (Type: d)
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Signal: org.freedesktop.DBus.ObjectManager : InterfacesRemoved | Path: /
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0
+Signal: org.freedesktop.DBus : NameAcquired | Path: /org/freedesktop/DBus
+Signal: org.freedesktop.DBus.ObjectManager : InterfacesAdded | Path: /
+Signal: org.freedesktop.DBus.ObjectManager : InterfacesAdded | Path: /
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_BC_C7_DA_94_DD_0B
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Debug: Parsed State: 2
+Debug: Parsed Percentage: 60.00 (Type: d)
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Debug: Parsed Percentage: 60.00 (Type: d)
+Debug: Parsed State: 2
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_BC_C7_DA_94_DD_0B
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/line_power_ADP1
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Debug: Parsed State: 1
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Debug: Parsed State: 1
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/line_power_ADP1
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_EA_79_F3_9F_FD_D7/sep1/fd0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /media_player4
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/battery_BAT0
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/freedesktop/UPower/devices/DisplayDevice
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /media_player4
+Signal: org.freedesktop.DBus.Properties : PropertiesChanged | Path: /org/bluez/hci0/dev_EA_79_F3_9F_FD_D7/sep1/fd0
