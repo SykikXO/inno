@@ -34,7 +34,18 @@ bg_color=#AA000000    # Semi-transparent Black (ARGB)
 
 ## Usage
 
-Run `inno` in your startup script or terminal:
+Run `inno` to start the agent. It runs as a **daemon** by default (detaches from terminal).
+
 ```bash
-inno &
+inno
+```
+
+To run in foreground (for debugging):
+```bash
+inno -f
+```
+
+To stop it:
+```bash
+pkill inno
 ```

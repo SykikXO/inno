@@ -6,7 +6,7 @@ xdata = pkgtype=debug
 pkgver = 0.1-1
 pkgdesc = Detached debugging symbols for inno
 url = https://github.com/sykik/dum
-builddate = 1767298137
+builddate = 1767298292
 packager = Unknown Packager
 size = 112152
 arch = x86_64

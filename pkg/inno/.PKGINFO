@@ -6,7 +6,7 @@ xdata = pkgtype=pkg
 pkgver = 0.1-1
 pkgdesc = A lightweight, event-driven Wayland notification agent
 url = https://github.com/sykik/dum
-builddate = 1767298137
+builddate = 1767298292
 packager = Unknown Packager
 size = 27032
 arch = x86_64

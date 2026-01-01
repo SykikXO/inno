@@ -1,0 +1,9 @@
+build/
+build_verify/
+src/build/
+*.pkg.tar.zst
+pkg/
+src/
+inno
+inno.conf
+inno_debug.log
