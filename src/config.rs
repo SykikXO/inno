@@ -73,10 +73,11 @@ impl AppConfig {
     pub fn load() -> Self {
         let mut config = Self::default();
         
-        // Check these paths in order
+        // Check these paths in order (user config first, then system default)
         let paths = [
             std::env::current_dir().ok().map(|p| p.join("inno.conf")),
             dirs::config_dir().map(|p| p.join("inno/inno.conf")),
+            Some(std::path::PathBuf::from("/etc/xdg/inno/inno.conf")),
         ];
         
         let mut loaded_path = None;
