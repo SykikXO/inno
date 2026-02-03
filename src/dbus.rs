@@ -122,7 +122,7 @@ pub async fn run_dbus_listener(tx: mpsc::Sender<Event>) -> anyhow::Result<()> {
             if member == "PropertiesChanged" {
                 handle_properties_changed(&msg, &tx, &conn).await;
             } else if member == "InterfacesAdded" {
-                if let Err(e) = tx.send(Event::StateChange(())).await {}
+                if let Err(_e) = tx.send(Event::StateChange(())).await {}
             }
         }
     }
@@ -271,7 +271,7 @@ async fn handle_properties_changed(msg: &Message, tx: &mpsc::Sender<Event>, conn
                             4 => "Battery Full",
                             _ => continue,
                         };
-                        if let Err(e) = tx.send(Event::StateChange(())).await {}
+                        if let Err(_e) = tx.send(Event::StateChange(())).await {}
                     }
                 }
             }
