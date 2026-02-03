@@ -21,5 +21,4 @@ inno_debug.log
 Thumbs.db
 
 # AUR
-inno
-inno/*
+/inno/
