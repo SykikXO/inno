@@ -1,3 +1,0 @@
-# Hashes of file build rules.
-3dfb05f69085d77d6300ba095e44639f generated/wlr-layer-shell-unstable-v1-protocol.c
-7ddbedc7c3f0906e159e34d3922118ce generated/xdg-shell-protocol.c

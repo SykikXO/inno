@@ -1,0 +1,17 @@
+[package]
+name = "inno"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+smithay-client-toolkit = "0.18"
+wayland-client = "0.31"
+wayland-backend = "0.3"
+cairo-rs = "0.19"
+zbus = { version = "4.0", features = ["tokio"] }
+tokio = { version = "1", features = ["full", "io-util", "fs"] } # Added extra features just in case
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+dirs = "5.0"
+anyhow = "1.0"
+futures = "0.3"

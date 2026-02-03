@@ -1,23 +1,22 @@
 # Maintainer: Sykik <sykik@example.com>
 pkgname=inno
-pkgver=0.1
+pkgver=0.2.0
 pkgrel=1
-pkgdesc="A lightweight, event-driven Wayland notification agent"
+pkgdesc="A lightweight,event-driven Wayland notification agent (Rust)"
 arch=('x86_64')
 url="https://github.com/sykik/dum"
 license=('MIT')
 depends=('wayland' 'cairo' 'dbus' 'glibc')
-makedepends=('cmake' 'make' 'wayland-protocols')
+makedepends=('rust' 'cargo')
 source=()
 md5sums=()
 
 build() {
-  cmake -B build -S "$srcdir/.." \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX=/usr
-  cmake --build build
+  cd "$srcdir/.."
+  cargo build --release
 }
 
 package() {
-  DESTDIR="$pkgdir" cmake --install build
+  cd "$srcdir/.."
+  install -Dm755 target/release/inno "$pkgdir/usr/bin/inno"
 }

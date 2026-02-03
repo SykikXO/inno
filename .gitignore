@@ -1,9 +1,21 @@
-build/
-build_verify/
-src/build/
+# Build artifacts
+/target/
 *.pkg.tar.zst
 pkg/
-src/
-inno
-inno.conf
+build/
+
+# Debug/log files
+*.log
 inno_debug.log
+
+# Editor/IDE
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
