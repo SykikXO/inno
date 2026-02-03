@@ -19,3 +19,7 @@ inno_debug.log
 # OS
 .DS_Store
 Thumbs.db
+
+# AUR
+inno
+inno/*
