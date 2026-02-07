@@ -45,7 +45,7 @@ icon_size = 28
 color = "green"
 threshold = 0
 state = "charging"
-animation = "fadein"
+animation = "fade"
 duration = 2
 
 [[signal]]
