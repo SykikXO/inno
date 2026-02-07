@@ -1,0 +1,89 @@
+# Inno Battery Notification Configuration
+
+[general]
+font = "InputMono Nerd Font"
+font_size = 18.0
+font_slant = "normal"    # normal, italic, oblique
+font_weight = "normal"   # normal, bold
+position = "center,bottom,10"
+format = "{message} {percent}%"
+
+[appearance]
+text_color = [1.0, 1.0, 1.0, 1.0]
+bg_color = [0.0, 0.0, 0.0, 0.7]
+border_radius = 8.0
+gradient = true
+
+# Optional settings
+# output = "primary"       # primary, all, or output name
+# battery_mode = "first"   # first, combined, highest, lowest
+
+# Named colors (referenced by signals)
+[colors]
+white = [1.0, 1.0, 1.0, 1.0]
+red = [1.0, 0.0, 0.0, 1.0]
+orange = [1.0, 0.65, 0.0, 1.0]
+yellow = [1.0, 1.0, 0.0, 1.0]
+green = [0.0, 1.0, 0.0, 1.0]
+violet = [0.6, 0.4, 0.8, 1.0]
+
+# Signals triggered based on battery state
+[[signal]]
+message = "Discharging"
+icon = ""
+icon_size = 24
+color = "white"
+threshold = 100
+state = "discharging"
+animation = "none"
+duration = 2
+
+[[signal]]
+message = "Charging"
+icon = "󱐋"
+icon_size = 28
+color = "green"
+threshold = 0
+state = "charging"
+animation = "fadein"
+duration = 2
+
+[[signal]]
+message = "Critical!"
+icon = "󱃍"
+icon_size = 28
+color = "red"
+threshold = 15
+state = "discharging"
+animation = "flicker"
+duration = 10
+
+[[signal]]
+message = "Low Battery!"
+icon = "󰂃"
+icon_size = 28
+color = "orange"
+threshold = 25
+state = "discharging"
+animation = "pulse"
+duration = 30
+
+[[signal]]
+message = "Optimal!"
+icon = "󱊦"
+icon_size = 28
+color = "yellow"
+threshold = 80
+state = "charging"
+animation = "bounce"
+duration = 5
+
+[[signal]]
+message = "always"
+icon = "󰂀"
+icon_size = 24
+color = "violet"
+threshold = 0
+state = "any"
+animation = "slide"
+duration = 5
