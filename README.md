@@ -23,8 +23,13 @@ cargo install --path .
 ## Installation
 
 ### Arch Linux (AUR)
+Inno is available on the AUR. Install using your preferred AUR helper:
 ```bash
 yay -S inno
+# or
+paru -S inno
+# or
+pikaur -S inno
 ```
 
 ### Manual Build
