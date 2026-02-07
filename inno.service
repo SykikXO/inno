@@ -1,18 +1,11 @@
 [Unit]
-Description=Inno battery notification daemon
+Description=Inno Notification Agent
+Documentation=https://github.com/SykikXO/inno
 After=graphical-session.target
-PartOf=graphical-session.target
 
 [Service]
-Type=simple
 ExecStart=/usr/bin/inno
-Restart=on-failure
-RestartSec=5
-
-# Resource limits for low CPU usage
-CPUQuota=5%
-MemoryMax=50M
-Nice=19
+Restart=always
 
 [Install]
-WantedBy=graphical-session.target
+WantedBy=default.target
