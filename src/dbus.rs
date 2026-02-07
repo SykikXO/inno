@@ -1,33 +1,31 @@
+//! DBus event listener for battery and custom events
+//!
+//! Listens for DBus signals based on configurable event definitions.
+
+use crate::events::{EventConfig, format_message};
 use futures::StreamExt;
 use std::collections::HashMap;
+use std::time::Instant;
 use tokio::sync::mpsc;
-use zbus::zvariant::ObjectPath;
 use zbus::zvariant::Value;
-use zbus::{Connection, Message};
+use zbus::Connection;
 
-/// Current battery state with all relevant data
+/// Notification event sent to main loop
 #[derive(Debug, Clone)]
-pub struct BatteryState {
-    pub percentage: f64,
-    pub state: String,              // "charging", "discharging", "full"
-    pub time_to_empty: Option<f64>, // minutes
-    pub time_to_full: Option<f64>,  // minutes
-}
-
-impl Default for BatteryState {
-    fn default() -> Self {
-        Self {
-            percentage: 100.0,
-            state: "unknown".to_string(),
-            time_to_empty: None,
-            time_to_full: None,
-        }
-    }
+pub struct NotifyEvent {
+    pub event_name: String,
+    #[allow(dead_code)]
+    pub message: String,
+    #[allow(dead_code)]
+    pub values: HashMap<String, String>,
+    /// Percentage for signal matching (if applicable)
+    pub percentage: Option<f64>,
+    /// State string for signal matching (if applicable)
+    pub state: Option<String>,
 }
 
 pub enum Event {
-    Battery(BatteryState),
-    StateChange(()), // Simple state change notification (charging/discharging/full)
+    Notify(NotifyEvent),
 }
 
 /// Extract f64 from a Value, unwrapping nested variants
@@ -43,7 +41,7 @@ fn extract_f64(val: &Value) -> Option<f64> {
     }
 }
 
-/// Extract u32 from a Value, unwrapping nested variants
+/// Extract u32 from a Value
 fn extract_u32(val: &Value) -> Option<u32> {
     match val {
         Value::U32(v) => Some(*v),
@@ -53,180 +51,28 @@ fn extract_u32(val: &Value) -> Option<u32> {
     }
 }
 
-/// Extract i64 from a Value, unwrapping nested variants
-fn extract_i64(val: &Value) -> Option<i64> {
+/// Convert Value to String for display
+fn value_to_string(val: &Value, state_map: &HashMap<String, String>) -> String {
     match val {
-        Value::I64(v) => Some(*v),
-        Value::U64(v) => Some(*v as i64),
-        Value::I32(v) => Some(*v as i64),
-        Value::U32(v) => Some(*v as i64),
-        Value::Value(inner) => extract_i64(inner),
-        _ => None,
+        Value::U32(v) => {
+            // Check state map with string key
+            state_map.get(&v.to_string()).cloned().unwrap_or_else(|| v.to_string())
+        }
+        Value::I32(v) => {
+            state_map.get(&v.to_string()).cloned().unwrap_or_else(|| v.to_string())
+        }
+        Value::F64(v) => format!("{:.0}", v),
+        Value::I64(v) => v.to_string(),
+        Value::U64(v) => v.to_string(),
+        Value::Str(s) => s.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Value(inner) => value_to_string(inner, state_map),
+        _ => format!("{:?}", val),
     }
 }
 
-pub async fn run_dbus_listener(tx: mpsc::Sender<Event>) -> anyhow::Result<()> {
-    let conn = Connection::system().await?;
-
-    // Match on battery device properties
-    conn.call_method(
-        Some("org.freedesktop.DBus"),
-        "/org/freedesktop/DBus",
-        Some("org.freedesktop.DBus"),
-        "AddMatch",
-        &("type='signal',path='/org/freedesktop/UPower/devices/battery_BAT0',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged'"),
-    ).await.ok();
-
-    conn.call_method(
-        Some("org.freedesktop.DBus"),
-        "/org/freedesktop/DBus",
-        Some("org.freedesktop.DBus"),
-        "AddMatch",
-        &("type='signal',path='/org/freedesktop/UPower/devices/battery_BAT1',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged'"),
-    ).await.ok();
-
-    conn.call_method(
-        Some("org.freedesktop.DBus"),
-        "/org/freedesktop/DBus",
-        Some("org.freedesktop.DBus"),
-        "AddMatch",
-        &("type='signal',path='/org/freedesktop/UPower/devices/line_power_ADP1',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged'"),
-    ).await?;
-
-    conn.call_method(
-        Some("org.freedesktop.DBus"),
-        "/org/freedesktop/DBus",
-        Some("org.freedesktop.DBus"),
-        "AddMatch",
-        &("type='signal',interface='org.freedesktop.DBus.ObjectManager',member='InterfacesAdded'"),
-    )
-    .await?;
-
-    let mut stream = zbus::MessageStream::from(conn.clone());
-
-    // Get initial battery state
-    if let Ok(initial_state) = get_battery_state(&conn).await {
-        let _ = tx.send(Event::Battery(initial_state)).await;
-    }
-
-    while let Some(msg_res) = stream.next().await {
-        if let Ok(msg) = msg_res {
-            let header = msg.header();
-            let path = header.path().map(|p| p.to_string()).unwrap_or_default();
-            if !path.contains("UPower") {
-                continue;
-            }
-
-            let member = header.member().map(|m| m.to_string()).unwrap_or_default();
-
-            if member == "PropertiesChanged" {
-                handle_properties_changed(&msg, &tx, &conn).await;
-            } else if member == "InterfacesAdded" {
-                if let Err(_e) = tx.send(Event::StateChange(())).await {}
-            }
-        }
-    }
-    Ok(())
-}
-
-async fn get_battery_state(conn: &Connection) -> anyhow::Result<BatteryState> {
-    let mut state = BatteryState::default();
-
-    // Use string slice paths directly
-    let bat_paths = [
-        "/org/freedesktop/UPower/devices/battery_BAT0",
-        "/org/freedesktop/UPower/devices/battery_BAT1",
-    ];
-
-    for path in &bat_paths {
-        let obj_path = ObjectPath::try_from(*path)?;
-
-        // Get Percentage
-        if let Ok(reply) = conn
-            .call_method(
-                Some("org.freedesktop.UPower"),
-                obj_path.clone(),
-                Some("org.freedesktop.DBus.Properties"),
-                "Get",
-                &("org.freedesktop.UPower.Device", "Percentage"),
-            )
-            .await
-        {
-            if let Ok(val) = reply.body().deserialize::<Value>() {
-                if let Some(pct) = extract_f64(&val) {
-                    state.percentage = pct;
-                }
-            }
-        }
-
-        // Get State
-        if let Ok(reply) = conn
-            .call_method(
-                Some("org.freedesktop.UPower"),
-                obj_path.clone(),
-                Some("org.freedesktop.DBus.Properties"),
-                "Get",
-                &("org.freedesktop.UPower.Device", "State"),
-            )
-            .await
-        {
-            if let Ok(val) = reply.body().deserialize::<Value>() {
-                if let Some(s) = extract_u32(&val) {
-                    state.state = state_to_string(s);
-                }
-            }
-        }
-
-        // Get TimeToEmpty
-        if let Ok(reply) = conn
-            .call_method(
-                Some("org.freedesktop.UPower"),
-                obj_path.clone(),
-                Some("org.freedesktop.DBus.Properties"),
-                "Get",
-                &("org.freedesktop.UPower.Device", "TimeToEmpty"),
-            )
-            .await
-        {
-            if let Ok(val) = reply.body().deserialize::<Value>() {
-                if let Some(secs) = extract_i64(&val) {
-                    if secs > 0 {
-                        state.time_to_empty = Some(secs as f64 / 60.0);
-                    }
-                }
-            }
-        }
-
-        // Get TimeToFull
-        if let Ok(reply) = conn
-            .call_method(
-                Some("org.freedesktop.UPower"),
-                obj_path.clone(),
-                Some("org.freedesktop.DBus.Properties"),
-                "Get",
-                &("org.freedesktop.UPower.Device", "TimeToFull"),
-            )
-            .await
-        {
-            if let Ok(val) = reply.body().deserialize::<Value>() {
-                if let Some(secs) = extract_i64(&val) {
-                    if secs > 0 {
-                        state.time_to_full = Some(secs as f64 / 60.0);
-                    }
-                }
-            }
-        }
-
-        // If we got valid percentage, break
-        if state.percentage < 100.0 || state.state != "unknown" {
-            break;
-        }
-    }
-
-    Ok(state)
-}
-
-fn state_to_string(state: u32) -> String {
+/// Map UPower state number to string
+fn upower_state_to_string(state: u32) -> String {
     match state {
         1 => "charging".to_string(),
         2 => "discharging".to_string(),
@@ -235,46 +81,231 @@ fn state_to_string(state: u32) -> String {
     }
 }
 
-async fn handle_properties_changed(msg: &Message, tx: &mpsc::Sender<Event>, conn: &Connection) {
-    if let Ok((iface, changed, _invalidated)) =
-        msg.body()
-            .deserialize::<(String, HashMap<String, Value>, Vec<String>)>()
-    {
-        if iface.contains("UPower.Device") {
-            // Check if any battery-related property changed
-            let has_battery_change = changed.keys().any(|k| {
-                matches!(
-                    k.as_str(),
-                    "Percentage" | "State" | "TimeToEmpty" | "TimeToFull"
-                )
-            });
+/// Query full battery state from UPower
+async fn query_battery_state(conn: &Connection, path: &str) -> Option<(f64, String)> {
+    // Query Percentage
+    let percentage = conn.call_method(
+        Some("org.freedesktop.UPower"),
+        path,
+        Some("org.freedesktop.DBus.Properties"),
+        "Get",
+        &("org.freedesktop.UPower.Device", "Percentage"),
+    ).await.ok()
+    .and_then(|reply| {
+        reply.body().deserialize::<Value>().ok()
+            .and_then(|v| extract_f64(&v))
+    })?;
+    
+    // Query State
+    let state = conn.call_method(
+        Some("org.freedesktop.UPower"),
+        path,
+        Some("org.freedesktop.DBus.Properties"),
+        "Get",
+        &("org.freedesktop.UPower.Device", "State"),
+    ).await.ok()
+    .and_then(|reply| {
+        reply.body().deserialize::<Value>().ok()
+            .and_then(|v| extract_u32(&v))
+    })
+    .map(upower_state_to_string)
+    .unwrap_or_else(|| "unknown".to_string());
+    
+    Some((percentage, state))
+}
 
-            if has_battery_change {
-                // Fetch full battery state
-                if let Ok(state) = get_battery_state(conn).await {
-                    eprintln!(
-                        "Battery update: {:.0}% {:?} (empty: {:?}min, full: {:?}min)",
-                        state.percentage, state.state, state.time_to_empty, state.time_to_full
-                    );
-                    let _ = tx.send(Event::Battery(state)).await;
+
+/// Run the DBus listener with configurable events
+pub async fn run_dbus_listener(
+    tx: mpsc::Sender<Event>,
+    events: Vec<EventConfig>,
+) -> anyhow::Result<()> {
+    // Separate events by bus type
+    let system_events: Vec<_> = events.iter().filter(|e| e.bus == "system").collect();
+    let session_events: Vec<_> = events.iter().filter(|e| e.bus == "session").collect();
+
+    eprintln!("Starting DBus listeners: {} system, {} session events",
+        system_events.len(), session_events.len());
+
+    // Start system bus listener if we have system events
+    if !system_events.is_empty() {
+        let tx_clone = tx.clone();
+        let events_clone: Vec<EventConfig> = system_events.into_iter().cloned().collect();
+        tokio::spawn(async move {
+            if let Err(e) = run_bus_listener("system", tx_clone, events_clone).await {
+                eprintln!("System bus listener error: {}", e);
+            }
+        });
+    }
+
+    // Start session bus listener if we have session events
+    if !session_events.is_empty() {
+        let tx_clone = tx.clone();
+        let events_clone: Vec<EventConfig> = session_events.into_iter().cloned().collect();
+        tokio::spawn(async move {
+            if let Err(e) = run_bus_listener("session", tx_clone, events_clone).await {
+                eprintln!("Session bus listener error: {}", e);
+            }
+        });
+    }
+
+    // Keep the main task alive
+    futures::future::pending::<()>().await;
+    Ok(())
+}
+
+async fn run_bus_listener(
+    bus_type: &str,
+    tx: mpsc::Sender<Event>,
+    events: Vec<EventConfig>,
+) -> anyhow::Result<()> {
+    let conn = if bus_type == "system" {
+        Connection::system().await?
+    } else {
+        Connection::session().await?
+    };
+
+    // Build match rules for all events
+    for event in &events {
+        let match_rule = event.match_rule.to_match_string();
+        eprintln!("Adding match rule for '{}': {}", event.name, match_rule);
+        
+        conn.call_method(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            Some("org.freedesktop.DBus"),
+            "AddMatch",
+            &match_rule,
+        ).await?;
+    }
+
+    // Debounce tracking
+    let mut last_trigger: HashMap<String, Instant> = HashMap::new();
+
+    // Listen for messages
+    let mut stream = zbus::MessageStream::from(&conn);
+    while let Some(msg_result) = stream.next().await {
+        let msg = match msg_result {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+
+        // Get message header info
+        let header = msg.header();
+        let interface = match header.interface() {
+            Some(i) => i.to_string(),
+            None => continue,
+        };
+        let member = match header.member() {
+            Some(m) => m.to_string(),
+            None => continue,
+        };
+        let path = header.path().map(|p| p.to_string()).unwrap_or_default();
+
+        // Find matching event config
+        for event in &events {
+            if !event.match_rule.matches(&interface, &member, &path) {
+                continue;
+            }
+
+            // Check arg0 if specified
+            if let Some(ref expected_arg0) = event.match_rule.arg0 {
+                if let Ok((arg0, _, _)) = msg.body().deserialize::<(String, HashMap<String, Value>, Vec<String>)>() {
+                    if &arg0 != expected_arg0 {
+                        continue;
+                    }
+                } else {
+                    continue;
                 }
             }
 
-            // Also send simple state change for immediate feedback
-            for (key, value) in changed {
-                if key == "State" {
-                    if let Some(state) = extract_u32(&value) {
-                        let _text = match state {
-                            // Renamed to _text as it's unused
-                            1 => "Charging",
-                            2 => "Discharging",
-                            4 => "Battery Full",
-                            _ => continue,
-                        };
-                        if let Err(_e) = tx.send(Event::StateChange(())).await {}
+            // Parse message body (PropertiesChanged format)
+            if let Ok((_, changed_props, _)) = msg.body().deserialize::<(String, HashMap<String, Value>, Vec<String>)>() {
+                // Check conditions
+                let should_trigger = if event.conditions.trigger_on.is_empty() {
+                    true
+                } else if event.conditions.require_all {
+                    event.conditions.trigger_on.iter().all(|k| changed_props.contains_key(k))
+                } else {
+                    event.conditions.trigger_on.iter().any(|k| changed_props.contains_key(k))
+                };
+
+                if !should_trigger {
+                    continue;
+                }
+
+                // Check debounce
+                let now = Instant::now();
+                if event.conditions.debounce_ms > 0 {
+                    if let Some(last) = last_trigger.get(&event.name) {
+                        if now.duration_since(*last).as_millis() < event.conditions.debounce_ms as u128 {
+                            continue;
+                        }
                     }
+                }
+                last_trigger.insert(event.name.clone(), now);
+
+                // For battery events, query full state instead of relying on changed_props only
+                let is_battery_event = path.contains("battery") || path.contains("BAT");
+                let (percentage, state) = if is_battery_event {
+                    // Query full battery state from UPower
+                    if let Some((pct, st)) = query_battery_state(&conn, &path).await {
+                        eprintln!("Battery state query: {:.0}% {}", pct, st);
+                        (Some(pct), Some(st))
+                    } else {
+                        // Fall back to extracting from changed properties
+                        let pct = changed_props.get("Percentage").and_then(|v| extract_f64(v));
+                        let st = changed_props.get("State")
+                            .and_then(|v| extract_u32(v))
+                            .map(upower_state_to_string);
+                        (pct, st)
+                    }
+                } else {
+                    // Non-battery events: extract from changed properties
+                    let mut pct = None;
+                    let mut st = None;
+                    for (field_name, prop_path) in &event.extract {
+                        if let Some(value) = changed_props.get(prop_path) {
+                            if field_name == "percentage" {
+                                pct = extract_f64(value);
+                            }
+                            if field_name == "state" {
+                                st = Some(value_to_string(value, &event.state_map));
+                            }
+                        }
+                    }
+                    (pct, st)
+                };
+
+                // Build values map
+                let mut values: HashMap<String, String> = HashMap::new();
+                if let Some(pct) = percentage {
+                    values.insert("percentage".to_string(), format!("{:.0}", pct));
+                }
+                if let Some(ref st) = state {
+                    values.insert("state".to_string(), st.clone());
+                }
+
+                // Format message
+                let message = format_message(&event.format.message, &values);
+
+                eprintln!("Event '{}' triggered: {} (pct={:?}, state={:?})", 
+                    event.name, message, percentage, state);
+
+                let notify_event = NotifyEvent {
+                    event_name: event.name.clone(),
+                    message,
+                    values,
+                    percentage,
+                    state,
+                };
+
+                if tx.send(Event::Notify(notify_event)).await.is_err() {
+                    return Ok(());
                 }
             }
         }
     }
+
+    Ok(())
 }

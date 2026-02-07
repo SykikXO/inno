@@ -1,0 +1,29 @@
+# Battery Event - UPower Integration
+
+name = "Battery"
+enabled = true
+bus = "system"
+
+[match]
+interface = "org.freedesktop.DBus.Properties"
+member = "PropertiesChanged"
+# Match any battery device (battery_BAT0, battery_BAT1, etc.)
+path_prefix = "/org/freedesktop/UPower/devices"
+arg0 = "org.freedesktop.UPower.Device"
+
+[extract]
+percentage = "Percentage"
+state = "State"
+
+# State mapping: TOML keys must be strings
+[state_map]
+"1" = "charging"
+"2" = "discharging"
+"4" = "full"
+
+[format]
+message = "{percentage}%"
+
+[conditions]
+trigger_on = []
+debounce_ms = 1000
