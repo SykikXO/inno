@@ -41,15 +41,15 @@ impl DrawState {
                 self.offset_x = 0.0;
                 self.offset_y = 0.0;
             }
-            Animation::FadeIn => {
+            Animation::Fade => {
+                // Fade in for first ~20 frames, hold, then will fade out before hide
                 self.visible = true;
-                self.alpha = (t * 0.05).min(1.0);
-                self.offset_x = 0.0;
-                self.offset_y = 0.0;
-            }
-            Animation::FadeOut => {
-                self.visible = true;
-                self.alpha = (1.0 - t * 0.05).max(0.0);
+                let fade_in_duration = 20.0;
+                if t < fade_in_duration {
+                    self.alpha = (t / fade_in_duration).min(1.0);
+                } else {
+                    self.alpha = 1.0;
+                }
                 self.offset_x = 0.0;
                 self.offset_y = 0.0;
             }
@@ -131,8 +131,8 @@ pub fn draw_with_signal(
         return (1, 1);
     }
 
-    // FadeOut complete
-    if signal.is_some_and(|s| s.animation == Animation::FadeOut) && state.alpha <= 0.01 {
+    // Fade complete (alpha near zero means completely faded)
+    if signal.is_some_and(|s| s.animation == Animation::Fade) && state.alpha <= 0.01 {
         cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
         cr.set_operator(cairo::Operator::Source);
         cr.paint().unwrap();

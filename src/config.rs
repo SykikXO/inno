@@ -75,8 +75,7 @@ pub enum Animation {
     None,
     Flicker,
     Pulse,
-    FadeIn,
-    FadeOut,
+    Fade,
     Slide,
     Bounce,
 }
@@ -223,8 +222,7 @@ fn parse_animation(s: &str) -> Animation {
     match s.to_lowercase().as_str() {
         "flicker" => Animation::Flicker,
         "pulse" => Animation::Pulse,
-        "fadein" | "fade-in" => Animation::FadeIn,
-        "fadeout" | "fade-out" => Animation::FadeOut,
+        "fade" | "fadein" | "fadeout" | "fade-in" | "fade-out" => Animation::Fade,
         "slide" => Animation::Slide,
         "bounce" => Animation::Bounce,
         _ => Animation::None,
