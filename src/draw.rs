@@ -1,50 +1,116 @@
 use crate::config::{Animation, AppConfig, Signal};
-use cairo::{Context, FontSlant, FontWeight};
+use cairo::{Context, LinearGradient};
+use std::f64::consts::PI;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct DrawState {
     pub frame: u32,
     pub visible: bool,
+    pub alpha: f64,
+    pub offset_x: f64,
+    pub offset_y: f64,
+}
+
+impl Default for DrawState {
+    fn default() -> Self {
+        Self {
+            frame: 0,
+            visible: true,
+            alpha: 1.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+        }
+    }
 }
 
 impl DrawState {
     pub fn tick(&mut self, anim: &Animation) {
         self.frame = self.frame.wrapping_add(1);
-        self.visible = match anim {
-            Animation::Flicker => (self.frame / 15) % 2 == 0,
-            _ => true,
-        };
+        let t = self.frame as f64;
+        
+        match anim {
+            Animation::Flicker => {
+                self.visible = (self.frame / 15) % 2 == 0;
+                self.alpha = 1.0;
+                self.offset_x = 0.0;
+                self.offset_y = 0.0;
+            }
+            Animation::Pulse => {
+                self.visible = true;
+                self.alpha = 0.7 + 0.4 * (t * 0.15).sin().abs();
+                self.offset_x = 0.0;
+                self.offset_y = 0.0;
+            }
+            Animation::FadeIn => {
+                self.visible = true;
+                self.alpha = (t * 0.05).min(1.0);
+                self.offset_x = 0.0;
+                self.offset_y = 0.0;
+            }
+            Animation::FadeOut => {
+                self.visible = true;
+                self.alpha = (1.0 - t * 0.05).max(0.0);
+                self.offset_x = 0.0;
+                self.offset_y = 0.0;
+            }
+            Animation::Slide => {
+                self.visible = true;
+                self.alpha = 1.0;
+                // Slide in from right, ease out
+                let progress = (t * 0.1).min(1.0);
+                let eased = 1.0 - (1.0 - progress).powi(3);
+                self.offset_x = (1.0 - eased) * 200.0;
+                self.offset_y = 0.0;
+            }
+            Animation::Bounce => {
+                self.visible = true;
+                self.alpha = 1.0;
+                self.offset_x = 0.0;
+                // Bouncing effect
+                let bounce = (t * 0.2).sin().abs() * (1.0 / (1.0 + t * 0.02));
+                self.offset_y = -bounce * 20.0;
+            }
+            Animation::None => {
+                self.visible = true;
+                self.alpha = 1.0;
+                self.offset_x = 0.0;
+                self.offset_y = 0.0;
+            }
+        }
     }
+
     pub fn reset(&mut self) {
         self.frame = 0;
         self.visible = true;
+        self.alpha = 1.0;
+        self.offset_x = 0.0;
+        self.offset_y = 0.0;
     }
 }
 
-fn draw_warning_icon(cr: &Context, x: f64, y: f64, sz: f64, (r, g, b, a): (f64, f64, f64, f64)) {
-    let h = sz * 0.866;
-    cr.set_source_rgba(r, g, b, a);
-    cr.move_to(x + sz / 2.0, y);
-    cr.line_to(x + sz, y + h);
-    cr.line_to(x, y + h);
+/// Draw a rounded rectangle path
+fn rounded_rect(cr: &Context, x: f64, y: f64, w: f64, h: f64, radius: f64) {
+    let r = radius.min(w / 2.0).min(h / 2.0);
+    cr.new_sub_path();
+    cr.arc(x + w - r, y + r, r, -PI / 2.0, 0.0);
+    cr.arc(x + w - r, y + h - r, r, 0.0, PI / 2.0);
+    cr.arc(x + r, y + h - r, r, PI / 2.0, PI);
+    cr.arc(x + r, y + r, r, PI, 3.0 * PI / 2.0);
     cr.close_path();
-    cr.fill().unwrap();
+}
 
-    let c = if r + g + b > 1.5 { 0.0 } else { 1.0 };
-    cr.set_source_rgba(c, c, c, a);
-    cr.set_line_width(sz * 0.12);
-    cr.set_line_cap(cairo::LineCap::Round);
-    cr.move_to(x + sz / 2.0, y + h * 0.25);
-    cr.line_to(x + sz / 2.0, y + h * 0.6);
-    cr.stroke().unwrap();
-    cr.arc(
-        x + sz / 2.0,
-        y + h * 0.75,
-        sz * 0.06,
-        0.0,
-        std::f64::consts::TAU,
-    );
-    cr.fill().unwrap();
+/// Helper to measure icon extents
+fn measure_icon(cr: &Context, icon: &str, size: f64) -> cairo::TextExtents {
+    cr.set_font_size(size);
+    cr.text_extents(icon).unwrap()
+}
+
+/// Format notification text using config format string
+pub fn format_text(format: &str, icon: &str, message: &str, percent: f64) -> String {
+    format
+        .replace("{icon}", icon)
+        .replace("{message}", message)
+        .replace("{percent}", &format!("{:.0}", percent))
 }
 
 pub fn draw_with_signal(
@@ -57,7 +123,7 @@ pub fn draw_with_signal(
     let (r_bg, g_bg, b_bg, a_bg) = config.bg_color;
     let (r, g, b, a) = signal.map(|s| s.color).unwrap_or(config.text_color);
 
-    // Flicker off
+    // Flicker off - return minimal size
     if signal.is_some_and(|s| s.animation == Animation::Flicker && !state.visible) {
         cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
         cr.set_operator(cairo::Operator::Source);
@@ -65,50 +131,85 @@ pub fn draw_with_signal(
         return (1, 1);
     }
 
-    // Pulse alpha
-    let alpha = if signal.is_some_and(|s| s.animation == Animation::Pulse) {
-        0.6 + 0.4 * (state.frame as f64 * 0.15).sin().abs()
-    } else {
-        1.0
-    };
+    // FadeOut complete
+    if signal.is_some_and(|s| s.animation == Animation::FadeOut) && state.alpha <= 0.01 {
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
+        cr.set_operator(cairo::Operator::Source);
+        cr.paint().unwrap();
+        return (1, 1);
+    }
 
-    cr.select_font_face(&config.font, FontSlant::Italic, FontWeight::Bold);
-    cr.set_font_size(24.0);
+    let alpha = state.alpha;
 
+    // Select font and measure icon
+    cr.select_font_face(&config.font, config.font_slant, config.font_weight);
+    
+    let mut icon_w = 0.0;
+    if let Some(s) = signal {
+        if !s.icon.is_empty() {
+            let icon_ext = measure_icon(cr, &s.icon, s.icon_size);
+            icon_w = icon_ext.x_advance() + 10.0;
+        }
+    }
+
+    // Measure main text
+    cr.set_font_size(config.font_size);
     let ext = cr.text_extents(text).unwrap();
-    let icon_w = if signal.is_some() { 32.0 } else { 0.0 };
+
     let w = ext.width().ceil() as i32 + 20 + icon_w as i32;
     let h = ext.height().ceil() as i32 + 20;
 
-    // Clear + background
+    // Clear canvas
     cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
     cr.set_operator(cairo::Operator::Source);
     cr.paint().unwrap();
-    cr.set_source_rgba(r_bg, g_bg, b_bg, a_bg * alpha);
-    cr.set_operator(cairo::Operator::Over);
-    cr.rectangle(0.0, 0.0, w as f64, h as f64);
-    cr.fill().unwrap();
 
-    // Icon (always warning triangle for signals)
-    let text_x = if signal.is_some() {
-        draw_warning_icon(
-            cr,
-            10.0,
-            (h as f64 - 24.0) / 2.0,
-            24.0,
-            (r, g, b, a * alpha),
-        );
-        10.0 + icon_w
+    // Draw background (with optional gradient and rounded corners)
+    cr.set_operator(cairo::Operator::Over);
+    
+    if config.gradient {
+        let gradient = LinearGradient::new(0.0, 0.0, w as f64, 0.0);
+        gradient.add_color_stop_rgba(0.0, r_bg, g_bg, b_bg, a_bg * alpha);
+        gradient.add_color_stop_rgba(1.0, r_bg * 0.7, g_bg * 0.7, b_bg * 0.7, a_bg * alpha * 0.8);
+        cr.set_source(&gradient).unwrap();
+    } else {
+        cr.set_source_rgba(r_bg, g_bg, b_bg, a_bg * alpha);
+    }
+
+    if config.border_radius > 0.0 {
+        rounded_rect(cr, 0.0, 0.0, w as f64, h as f64, config.border_radius);
+        cr.fill().unwrap();
+    } else {
+        cr.rectangle(0.0, 0.0, w as f64, h as f64);
+        cr.fill().unwrap();
+    }
+
+    // Draw icon
+    let text_x = if let Some(s) = signal {
+        if !s.icon.is_empty() {
+            let icon_ext = measure_icon(cr, &s.icon, s.icon_size);
+            cr.set_source_rgba(r, g, b, a * alpha);
+            cr.move_to(
+                10.0 - icon_ext.x_bearing(),
+                h as f64 / 2.0 - (icon_ext.height() / 2.0 + icon_ext.y_bearing()),
+            );
+            cr.show_text(&s.icon).unwrap();
+            cr.set_font_size(config.font_size);
+            10.0 + icon_w
+        } else {
+            10.0
+        }
     } else {
         10.0
     };
 
-    // Text
+    // Draw text
     cr.set_source_rgba(r, g, b, a * alpha);
     cr.move_to(
         text_x,
         h as f64 / 2.0 - (ext.height() / 2.0 + ext.y_bearing()),
     );
     cr.show_text(text).unwrap();
+
     (w, h)
 }

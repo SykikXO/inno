@@ -110,6 +110,12 @@ impl LayerApp {
         self.layer_surface = Some(layer);
     }
 
+    /// Draw text without signal (for DBus Show command)
+    pub fn draw_text(&mut self, text: &str, config: &AppConfig) {
+        let draw_state = DrawState::default();
+        self.draw_text_with_signal(text, config, None, &draw_state);
+    }
+
     pub fn draw_text_with_signal(
         &mut self,
         text: &str,
