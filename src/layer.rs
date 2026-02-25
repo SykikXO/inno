@@ -133,7 +133,7 @@ impl LayerApp {
 
         // Skip drawing if animation says not visible
         if w <= 1 || h <= 1 {
-            // For flicker-off, just clear the surface
+            // For blink-off, just clear the surface
             if let Some(layer) = &self.layer_surface {
                 if let Some(pool) = &mut self.pool {
                     if let Ok((buffer, canvas)) =

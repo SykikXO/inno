@@ -73,7 +73,7 @@ struct SignalConfig {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Animation {
     None,
-    Flicker,
+    Blink,
     Pulse,
     Fade,
     Slide,
@@ -209,7 +209,7 @@ fn parse_font_weight(s: &str) -> FontWeight {
 
 fn parse_animation(s: &str) -> Animation {
     match s.to_lowercase().as_str() {
-        "flicker" => Animation::Flicker,
+        "blink" | "flicker" => Animation::Blink,
         "pulse" => Animation::Pulse,
         "fade" | "fadein" | "fadeout" | "fade-in" | "fade-out" => Animation::Fade,
         "slide" => Animation::Slide,

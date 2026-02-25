@@ -55,7 +55,7 @@ icon_size = 28
 color = "red"
 threshold = 15
 state = "discharging"
-animation = "flicker"
+animation = "blink"
 duration = 10
 
 [[signal]]

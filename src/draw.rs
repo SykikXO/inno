@@ -23,7 +23,7 @@ impl DrawState {
         let t = self.frame as f64;
 
         match anim {
-            Animation::Flicker => {
+            Animation::Blink => {
                 self.visible = (self.frame / 15) % 2 == 0;
                 self.alpha = 1.0;
                 self.offset_x = 0.0;
@@ -117,8 +117,8 @@ pub fn draw_with_signal(
     let (r_bg, g_bg, b_bg, a_bg) = config.bg_color;
     let (r, g, b, a) = signal.map(|s| s.color).unwrap_or(config.text_color);
 
-    // Flicker off - return minimal size
-    if signal.is_some_and(|s| s.animation == Animation::Flicker && !state.visible) {
+    // Blink off - return minimal size
+    if signal.is_some_and(|s| s.animation == Animation::Blink && !state.visible) {
         cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
         cr.set_operator(cairo::Operator::Source);
         cr.paint().unwrap();
