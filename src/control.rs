@@ -1,5 +1,5 @@
 //! DBus control interface for inno
-//! 
+//!
 //! Exposes org.inno.Control interface on session bus for external control.
 //! Methods: Show(message), Hide, GetState, Reload
 
@@ -46,10 +46,7 @@ impl InnoService {
 
     /// Get current battery state
     fn get_state(&self) -> zbus::fdo::Result<(f64, String)> {
-        let pct = self
-            .battery_percentage
-            .load(std::sync::atomic::Ordering::Relaxed) as f64
-            / 100.0;
+        let pct = self.battery_percentage.load(std::sync::atomic::Ordering::Relaxed) as f64 / 100.0;
         let state = self.battery_state.read().unwrap().clone();
         Ok((pct * 100.0, state))
     }
@@ -77,15 +74,9 @@ pub async fn start_control_service(
 ) -> anyhow::Result<zbus::Connection> {
     let conn = zbus::Connection::session().await?;
 
-    let service = InnoService {
-        tx,
-        battery_percentage,
-        battery_state,
-    };
+    let service = InnoService { tx, battery_percentage, battery_state };
 
-    conn.object_server()
-        .at("/org/inno/Control", service)
-        .await?;
+    conn.object_server().at("/org/inno/Control", service).await?;
 
     conn.request_name("org.inno.Control").await?;
 

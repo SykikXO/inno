@@ -8,21 +8,21 @@ use smithay_client_toolkit::{
     delegate_shm,
     output::{OutputHandler, OutputState},
     reexports::client::{
+        Connection, QueueHandle,
         globals::registry_queue_init,
         protocol::{wl_output, wl_seat, wl_shm, wl_surface},
-        Connection, QueueHandle,
     },
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
     seat::{Capability, SeatHandler, SeatState},
     shell::{
+        WaylandSurface,
         wlr_layer::{
             Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
             LayerSurfaceConfigure,
         },
-        WaylandSurface,
     },
-    shm::{slot::SlotPool, Shm, ShmHandler},
+    shm::{Shm, ShmHandler, slot::SlotPool},
 };
 
 pub struct LayerApp {
@@ -157,11 +157,8 @@ impl LayerApp {
         // Create pool if needed
         if self.pool.is_none() {
             self.pool = Some(
-                SlotPool::new(
-                    self.width as usize * self.height as usize * 4,
-                    &self.shm_state,
-                )
-                .expect("Failed to create pool"),
+                SlotPool::new(self.width as usize * self.height as usize * 4, &self.shm_state)
+                    .expect("Failed to create pool"),
             );
         }
 
@@ -203,9 +200,7 @@ impl LayerApp {
         let layer = self.layer_surface.as_ref().unwrap();
         layer.set_size(self.width, self.height);
         layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
-        layer
-            .wl_surface()
-            .damage(0, 0, self.width as i32, self.height as i32);
+        layer.wl_surface().damage(0, 0, self.width as i32, self.height as i32);
         layer.commit();
     }
 

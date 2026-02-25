@@ -55,7 +55,7 @@ impl MatchRule {
     /// Build a DBus match rule string
     pub fn to_match_string(&self) -> String {
         let mut parts = vec!["type='signal'".to_string()];
-        
+
         if let Some(iface) = &self.interface {
             parts.push(format!("interface='{}'", iface));
         }
@@ -74,7 +74,7 @@ impl MatchRule {
         if let Some(sender) = &self.sender {
             parts.push(format!("sender='{}'", sender));
         }
-        
+
         parts.join(",")
     }
 
@@ -127,11 +127,7 @@ pub struct ConditionsConfig {
 
 impl Default for ConditionsConfig {
     fn default() -> Self {
-        Self {
-            trigger_on: vec![],
-            debounce_ms: 0,
-            require_all: false,
-        }
+        Self { trigger_on: vec![], debounce_ms: 0, require_all: false }
     }
 }
 
@@ -161,7 +157,11 @@ pub fn load_events() -> Vec<EventConfig> {
                         match load_event_file(&path) {
                             Ok(event) => {
                                 if event.enabled {
-                                    eprintln!("  Loaded event: {} ({})", event.name, path.display());
+                                    eprintln!(
+                                        "  Loaded event: {} ({})",
+                                        event.name,
+                                        path.display()
+                                    );
                                     events.push(event);
                                 } else {
                                     eprintln!("  Skipped disabled event: {}", event.name);
@@ -188,11 +188,9 @@ pub fn load_events() -> Vec<EventConfig> {
 
 /// Load a single event config file
 fn load_event_file(path: &PathBuf) -> Result<EventConfig, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("Read error: {}", e))?;
-    
-    toml::from_str(&content)
-        .map_err(|e| format!("Parse error: {}", e))
+    let content = std::fs::read_to_string(path).map_err(|e| format!("Read error: {}", e))?;
+
+    toml::from_str(&content).map_err(|e| format!("Parse error: {}", e))
 }
 
 /// Built-in battery event as fallback
@@ -220,23 +218,13 @@ fn builtin_battery_event() -> EventConfig {
         },
         extract,
         state_map,
-        format: FormatConfig {
-            message: "{percentage}%".to_string(),
-            signal: None,
-        },
-        conditions: ConditionsConfig {
-            trigger_on: vec![],
-            debounce_ms: 1000,
-            require_all: false,
-        },
+        format: FormatConfig { message: "{percentage}%".to_string(), signal: None },
+        conditions: ConditionsConfig { trigger_on: vec![], debounce_ms: 1000, require_all: false },
     }
 }
 
 /// Format message using extracted values
-pub fn format_message(
-    template: &str,
-    values: &HashMap<String, String>,
-) -> String {
+pub fn format_message(template: &str, values: &HashMap<String, String>) -> String {
     let mut result = template.to_string();
     for (key, value) in values {
         result = result.replace(&format!("{{{}}}", key), value);

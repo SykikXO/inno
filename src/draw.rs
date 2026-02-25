@@ -13,13 +13,7 @@ pub struct DrawState {
 
 impl Default for DrawState {
     fn default() -> Self {
-        Self {
-            frame: 0,
-            visible: true,
-            alpha: 1.0,
-            offset_x: 0.0,
-            offset_y: 0.0,
-        }
+        Self { frame: 0, visible: true, alpha: 1.0, offset_x: 0.0, offset_y: 0.0 }
     }
 }
 
@@ -27,7 +21,7 @@ impl DrawState {
     pub fn tick(&mut self, anim: &Animation) {
         self.frame = self.frame.wrapping_add(1);
         let t = self.frame as f64;
-        
+
         match anim {
             Animation::Flicker => {
                 self.visible = (self.frame / 15) % 2 == 0;
@@ -143,7 +137,7 @@ pub fn draw_with_signal(
 
     // Select font and measure icon
     cr.select_font_face(&config.font, config.font_slant, config.font_weight);
-    
+
     let mut icon_w = 0.0;
     if let Some(s) = signal {
         if !s.icon.is_empty() {
@@ -166,7 +160,7 @@ pub fn draw_with_signal(
 
     // Draw background (with optional gradient and rounded corners)
     cr.set_operator(cairo::Operator::Over);
-    
+
     if config.gradient {
         let gradient = LinearGradient::new(0.0, 0.0, w as f64, 0.0);
         gradient.add_color_stop_rgba(0.0, r_bg, g_bg, b_bg, a_bg * alpha);
@@ -205,10 +199,7 @@ pub fn draw_with_signal(
 
     // Draw text
     cr.set_source_rgba(r, g, b, a * alpha);
-    cr.move_to(
-        text_x,
-        h as f64 / 2.0 - (ext.height() / 2.0 + ext.y_bearing()),
-    );
+    cr.move_to(text_x, h as f64 / 2.0 - (ext.height() / 2.0 + ext.y_bearing()));
     cr.show_text(text).unwrap();
 
     (w, h)

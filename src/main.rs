@@ -1,3 +1,5 @@
+use notify::{Event as NotifyEvent, RecursiveMode, Watcher};
+use rodio::Source;
 use smithay_client_toolkit::reexports::client::Connection;
 use std::fs::File;
 use std::io::BufReader;
@@ -7,8 +9,6 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc;
-use notify::{Watcher, RecursiveMode, Event as NotifyEvent};
-use rodio::Source;
 
 mod config;
 mod control;
@@ -17,7 +17,7 @@ mod draw;
 mod events;
 mod layer;
 
-use config::{AppConfig, ANIMATION_INTERVAL_MS, HIDE_TIMEOUT_SECS};
+use config::{ANIMATION_INTERVAL_MS, AppConfig, HIDE_TIMEOUT_SECS};
 use control::ControlEvent;
 use dbus::Event;
 use draw::{DrawState, format_text};
@@ -52,7 +52,7 @@ fn play_sound(path: &PathBuf) {
         eprintln!("Sound file not found: {:?}", path);
         return;
     }
-    
+
     std::thread::spawn({
         let path = path.clone();
         move || {
@@ -74,18 +74,20 @@ async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let mut log_file: Option<PathBuf> = None;
     let mut enable_dbus = true;
-    let mut should_daemonize = true:
     let mut debug_mode = false;
+    let mut is_internal_daemon = false;
 
     // First pass to check critical flags
     for arg in &args {
-    match arg.as_str() {
-        "-d" | "--debug" => {
-            debug_mode = true;
-            should_daemonize = false;
+        match arg.as_str() {
+            "-d" | "--debug" => {
+                debug_mode = true;
+            }
+            "--internal-daemon" => {
+                is_internal_daemon = true;
+            }
+            _ => {}
         }
-        _ => {}
-      }
     }
 
     // Parse remaining arguments
@@ -114,11 +116,13 @@ async fn main() -> anyhow::Result<()> {
         i += 1;
     }
 
-    // Handle daemonization via self-respawn (safe alternative to fork)
-    if should_daemonize && !is_internal_daemon && !debug_mode {
+    if debug_mode {
+        println!("inno is running in debug mode.");
+    } else if !is_internal_daemon {
+        // Parent process: Handle daemonization via self-respawn
         println!("inno is running as a daemon. To stop it, use 'pkill inno'.");
         use std::os::unix::process::CommandExt;
-        
+
         let mut cmd = std::process::Command::new(&args[0]);
         for arg in &args[1..] {
             if arg != "--daemon" {
@@ -126,8 +130,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         cmd.arg("--internal-daemon");
-        
-        // Use pre_exec to call setsid in the child process (stable alternative)
+
         unsafe {
             cmd.pre_exec(|| {
                 libc::setsid();
@@ -144,7 +147,6 @@ async fn main() -> anyhow::Result<()> {
         cmd.spawn().expect("Failed to spawn background daemon");
         std::process::exit(0);
     }
-
     // Redirect stderr to log file if specified and not already handled by spawn redirection
     if let Some(ref path) = log_file {
         if !is_internal_daemon {
@@ -179,7 +181,9 @@ async fn main() -> anyhow::Result<()> {
             control_tx.clone(),
             battery_percentage.clone(),
             battery_state_shared.clone(),
-        ).await {
+        )
+        .await
+        {
             Ok(conn) => Some(conn),
             Err(e) => {
                 eprintln!("Failed to start DBus control interface: {}", e);
@@ -194,7 +198,7 @@ async fn main() -> anyhow::Result<()> {
     if let Some(ref config_path) = config.config_path {
         let config_path = config_path.clone();
         let config_tx = config_tx.clone();
-        
+
         std::thread::spawn(move || {
             let (watcher_tx, watcher_rx) = std::sync::mpsc::channel();
             let mut watcher = notify::recommended_watcher(move |res: Result<NotifyEvent, _>| {
@@ -203,12 +207,13 @@ async fn main() -> anyhow::Result<()> {
                         let _ = watcher_tx.send(());
                     }
                 }
-            }).ok();
-            
+            })
+            .ok();
+
             if let Some(ref mut w) = watcher {
                 let _ = w.watch(&config_path, RecursiveMode::NonRecursive);
             }
-            
+
             while let Ok(()) = watcher_rx.recv() {
                 let _ = config_tx.blocking_send(());
             }
@@ -241,7 +246,8 @@ async fn main() -> anyhow::Result<()> {
     let mut prev_signal_msg: Option<String> = None;
     let mut draw_state = DrawState::default();
     let mut hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
-    let mut animation_timer = Box::pin(tokio::time::sleep(Duration::from_millis(ANIMATION_INTERVAL_MS)));
+    let mut animation_timer =
+        Box::pin(tokio::time::sleep(Duration::from_millis(ANIMATION_INTERVAL_MS)));
     let mut animating = false;
     let mut current_percentage: Option<f64> = None;
     let mut current_state_str: Option<String> = None;
@@ -325,12 +331,12 @@ async fn main() -> anyhow::Result<()> {
                                     &sig.message,
                                     pct,
                                 );
-                                
+
                                 // Play sound if configured
                                 if let Some(ref sound_path) = sig.sound {
                                     play_sound(sound_path);
                                 }
-                                
+
                                 draw_state.reset();
                                 app.draw_text_with_signal(&text, &config, Some(sig), &draw_state);
                                 animating = sig.animation != config::Animation::None;

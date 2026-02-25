@@ -7,8 +7,8 @@ use futures::StreamExt;
 use std::collections::HashMap;
 use std::time::Instant;
 use tokio::sync::mpsc;
-use zbus::zvariant::Value;
 use zbus::Connection;
+use zbus::zvariant::Value;
 
 /// Notification event sent to main loop
 #[derive(Debug, Clone)]
@@ -58,9 +58,7 @@ fn value_to_string(val: &Value, state_map: &HashMap<String, String>) -> String {
             // Check state map with string key
             state_map.get(&v.to_string()).cloned().unwrap_or_else(|| v.to_string())
         }
-        Value::I32(v) => {
-            state_map.get(&v.to_string()).cloned().unwrap_or_else(|| v.to_string())
-        }
+        Value::I32(v) => state_map.get(&v.to_string()).cloned().unwrap_or_else(|| v.to_string()),
         Value::F64(v) => format!("{:.0}", v),
         Value::I64(v) => v.to_string(),
         Value::U64(v) => v.to_string(),
@@ -84,36 +82,35 @@ fn upower_state_to_string(state: u32) -> String {
 /// Query full battery state from UPower
 async fn query_battery_state(conn: &Connection, path: &str) -> Option<(f64, String)> {
     // Query Percentage
-    let percentage = conn.call_method(
-        Some("org.freedesktop.UPower"),
-        path,
-        Some("org.freedesktop.DBus.Properties"),
-        "Get",
-        &("org.freedesktop.UPower.Device", "Percentage"),
-    ).await.ok()
-    .and_then(|reply| {
-        reply.body().deserialize::<Value>().ok()
-            .and_then(|v| extract_f64(&v))
-    })?;
-    
+    let percentage = conn
+        .call_method(
+            Some("org.freedesktop.UPower"),
+            path,
+            Some("org.freedesktop.DBus.Properties"),
+            "Get",
+            &("org.freedesktop.UPower.Device", "Percentage"),
+        )
+        .await
+        .ok()
+        .and_then(|reply| reply.body().deserialize::<Value>().ok().and_then(|v| extract_f64(&v)))?;
+
     // Query State
-    let state = conn.call_method(
-        Some("org.freedesktop.UPower"),
-        path,
-        Some("org.freedesktop.DBus.Properties"),
-        "Get",
-        &("org.freedesktop.UPower.Device", "State"),
-    ).await.ok()
-    .and_then(|reply| {
-        reply.body().deserialize::<Value>().ok()
-            .and_then(|v| extract_u32(&v))
-    })
-    .map(upower_state_to_string)
-    .unwrap_or_else(|| "unknown".to_string());
-    
+    let state = conn
+        .call_method(
+            Some("org.freedesktop.UPower"),
+            path,
+            Some("org.freedesktop.DBus.Properties"),
+            "Get",
+            &("org.freedesktop.UPower.Device", "State"),
+        )
+        .await
+        .ok()
+        .and_then(|reply| reply.body().deserialize::<Value>().ok().and_then(|v| extract_u32(&v)))
+        .map(upower_state_to_string)
+        .unwrap_or_else(|| "unknown".to_string());
+
     Some((percentage, state))
 }
-
 
 /// Run the DBus listener with configurable events
 pub async fn run_dbus_listener(
@@ -124,8 +121,11 @@ pub async fn run_dbus_listener(
     let system_events: Vec<_> = events.iter().filter(|e| e.bus == "system").collect();
     let session_events: Vec<_> = events.iter().filter(|e| e.bus == "session").collect();
 
-    eprintln!("Starting DBus listeners: {} system, {} session events",
-        system_events.len(), session_events.len());
+    eprintln!(
+        "Starting DBus listeners: {} system, {} session events",
+        system_events.len(),
+        session_events.len()
+    );
 
     // Start system bus listener if we have system events
     if !system_events.is_empty() {
@@ -169,14 +169,15 @@ async fn run_bus_listener(
     for event in &events {
         let match_rule = event.match_rule.to_match_string();
         eprintln!("Adding match rule for '{}': {}", event.name, match_rule);
-        
+
         conn.call_method(
             Some("org.freedesktop.DBus"),
             "/org/freedesktop/DBus",
             Some("org.freedesktop.DBus"),
             "AddMatch",
             &match_rule,
-        ).await?;
+        )
+        .await?;
     }
 
     // Debounce tracking
@@ -210,7 +211,9 @@ async fn run_bus_listener(
 
             // Check arg0 if specified
             if let Some(ref expected_arg0) = event.match_rule.arg0 {
-                if let Ok((arg0, _, _)) = msg.body().deserialize::<(String, HashMap<String, Value>, Vec<String>)>() {
+                if let Ok((arg0, _, _)) =
+                    msg.body().deserialize::<(String, HashMap<String, Value>, Vec<String>)>()
+                {
                     if &arg0 != expected_arg0 {
                         continue;
                     }
@@ -220,7 +223,9 @@ async fn run_bus_listener(
             }
 
             // Parse message body (PropertiesChanged format)
-            if let Ok((_, changed_props, _)) = msg.body().deserialize::<(String, HashMap<String, Value>, Vec<String>)>() {
+            if let Ok((_, changed_props, _)) =
+                msg.body().deserialize::<(String, HashMap<String, Value>, Vec<String>)>()
+            {
                 // Check conditions
                 let should_trigger = if event.conditions.trigger_on.is_empty() {
                     true
@@ -238,7 +243,9 @@ async fn run_bus_listener(
                 let now = Instant::now();
                 if event.conditions.debounce_ms > 0 {
                     if let Some(last) = last_trigger.get(&event.name) {
-                        if now.duration_since(*last).as_millis() < event.conditions.debounce_ms as u128 {
+                        if now.duration_since(*last).as_millis()
+                            < event.conditions.debounce_ms as u128
+                        {
                             continue;
                         }
                     }
@@ -255,7 +262,8 @@ async fn run_bus_listener(
                     } else {
                         // Fall back to extracting from changed properties
                         let pct = changed_props.get("Percentage").and_then(|v| extract_f64(v));
-                        let st = changed_props.get("State")
+                        let st = changed_props
+                            .get("State")
                             .and_then(|v| extract_u32(v))
                             .map(upower_state_to_string);
                         (pct, st)
@@ -289,8 +297,10 @@ async fn run_bus_listener(
                 // Format message
                 let message = format_message(&event.format.message, &values);
 
-                eprintln!("Event '{}' triggered: {} (pct={:?}, state={:?})", 
-                    event.name, message, percentage, state);
+                eprintln!(
+                    "Event '{}' triggered: {} (pct={:?}, state={:?})",
+                    event.name, message, percentage, state
+                );
 
                 let notify_event = NotifyEvent {
                     event_name: event.name.clone(),

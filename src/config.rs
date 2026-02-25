@@ -134,20 +134,9 @@ impl Anchor {
             Some("center") => VAnchor::Center,
             _ => VAnchor::Bottom,
         };
-        let margin_h = parts
-            .get(2)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(DEFAULT_MARGIN);
-        let margin_v = parts
-            .get(3)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(margin_h);
-        Anchor {
-            h,
-            v,
-            margin_h,
-            margin_v,
-        }
+        let margin_h = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_MARGIN);
+        let margin_v = parts.get(3).and_then(|s| s.parse().ok()).unwrap_or(margin_h);
+        Anchor { h, v, margin_h, margin_v }
     }
 }
 
@@ -282,7 +271,7 @@ impl AppConfig {
 
         // Check if it's a TOML file
         let is_toml = config_path.extension().map(|e| e == "toml").unwrap_or(false);
-        
+
         if is_toml {
             if let Err(e) = config.load_toml(&config_path) {
                 eprintln!("Failed to parse TOML config: {}", e);
@@ -344,7 +333,9 @@ impl AppConfig {
 
         // Parse signals
         for sig_cfg in file.signal {
-            let color = file.colors.get(&sig_cfg.color)
+            let color = file
+                .colors
+                .get(&sig_cfg.color)
                 .map(|c| (c[0], c[1], c[2], c[3]))
                 .unwrap_or((1.0, 1.0, 1.0, 1.0));
 
@@ -409,7 +400,9 @@ impl AppConfig {
                     "position" => self.anchor = Anchor::parse(value),
                     "format" => self.format = value.to_string(),
                     "border_radius" => self.border_radius = value.parse().unwrap_or(0.0),
-                    "gradient" => self.gradient = value.eq_ignore_ascii_case("true") || value == "1",
+                    "gradient" => {
+                        self.gradient = value.eq_ignore_ascii_case("true") || value == "1"
+                    }
                     "output" => self.output = parse_output_mode(value),
                     "battery_mode" => self.battery_mode = parse_battery_mode(value),
                     "signal" => {
@@ -427,24 +420,23 @@ impl AppConfig {
 
     fn parse_color(value: &str) -> Option<(f64, f64, f64, f64)> {
         let inner = value.trim_start_matches('(').trim_end_matches(')');
-        let parts: Vec<f64> = inner
-            .split(',')
-            .filter_map(|s| s.trim().parse().ok())
-            .collect();
-        if parts.len() >= 4 {
-            Some((parts[0], parts[1], parts[2], parts[3]))
-        } else {
-            None
-        }
+        let parts: Vec<f64> = inner.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+        if parts.len() >= 4 { Some((parts[0], parts[1], parts[2], parts[3])) } else { None }
     }
 
-    fn parse_legacy_signal(&self, value: &str, colors: &HashMap<String, (f64, f64, f64, f64)>) -> Option<Signal> {
+    fn parse_legacy_signal(
+        &self,
+        value: &str,
+        colors: &HashMap<String, (f64, f64, f64, f64)>,
+    ) -> Option<Signal> {
         let parts: Vec<&str> = value.split(',').map(|s| s.trim()).collect();
         if parts.len() < 8 {
             return None;
         }
 
-        let color = colors.get(parts[3]).copied()
+        let color = colors
+            .get(parts[3])
+            .copied()
             .or_else(|| Self::parse_color(parts[3]))
             .unwrap_or((1.0, 1.0, 1.0, 1.0));
 
@@ -470,11 +462,8 @@ impl AppConfig {
             .filter(|s| {
                 let state_match =
                     s.state_filter == "any" || s.state_filter.eq_ignore_ascii_case(state);
-                let threshold_match = if is_charging {
-                    pct >= s.threshold
-                } else {
-                    pct <= s.threshold
-                };
+                let threshold_match =
+                    if is_charging { pct >= s.threshold } else { pct <= s.threshold };
                 state_match && threshold_match
             })
             .collect();
