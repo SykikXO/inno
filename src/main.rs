@@ -74,23 +74,18 @@ async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let mut log_file: Option<PathBuf> = None;
     let mut enable_dbus = true;
-    let mut should_daemonize = false;
-    let mut is_internal_daemon = false;
+    let mut should_daemonize = true:
     let mut debug_mode = false;
 
     // First pass to check critical flags
     for arg in &args {
-        match arg.as_str() {
-            "-d" | "--debug" => debug_mode = true,
-            "--daemon" => should_daemonize = true,
-            "--internal-daemon" => is_internal_daemon = true,
-            _ => {}
+    match arg.as_str() {
+        "-d" | "--debug" => {
+            debug_mode = true;
+            should_daemonize = false;
         }
-    }
-
-    // Default to daemon if no arguments and not already spawned as daemon child
-    if args.len() == 1 && !is_internal_daemon && !debug_mode {
-        should_daemonize = true;
+        _ => {}
+      }
     }
 
     // Parse remaining arguments
