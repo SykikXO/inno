@@ -32,8 +32,9 @@ USAGE:
 OPTIONS:
     -h, --help              Show this help message
     -v, --version           Show version
-    -d, --daemon            Run in background (daemon mode)
-    -l, --log-file <PATH>   Log output to file (useful with -d)
+    -d, --debug             Run in debug mode (spitting logs to terminal)
+    --daemon                Run in background (daemon mode)
+    -l, --log-file <PATH>   Log output to file (useful with --daemon)
     --no-dbus               Disable DBus control interface
 
 CONFIG:
@@ -70,11 +71,13 @@ fn play_sound(path: &PathBuf) {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
-    let args: Vec<String> = std::env::args().collect();
+    let mut args: Vec<String> = std::env::args().collect();
     let mut log_file: Option<PathBuf> = None;
     let mut enable_dbus = true;
     let mut i = 1;
-    
+    if args.len() == 1 {
+        args.push("--daemon".to_string());
+    }
     while i < args.len() {
         match args[i].as_str() {
             "-h" | "--help" => {
@@ -85,7 +88,12 @@ async fn main() -> anyhow::Result<()> {
                 println!("inno {}", VERSION);
                 return Ok(());
             }
-            "-d" | "--daemon" => {
+            "-d" | "--debug" => {
+                // Debug mode: just means we don't daemonize, and keep logs printing.
+                // Since eprintln! is already used for logs, we just let it be.
+            }
+            "--daemon" => {
+                println!("inno is running as a daemon. To stop it, use 'pkill inno'.");
                 unsafe {
                     if libc::fork() != 0 {
                         std::process::exit(0);
