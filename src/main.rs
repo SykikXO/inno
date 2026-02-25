@@ -71,13 +71,30 @@ fn play_sound(path: &PathBuf) {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
-    let mut args: Vec<String> = std::env::args().collect();
+    let args: Vec<String> = std::env::args().collect();
     let mut log_file: Option<PathBuf> = None;
     let mut enable_dbus = true;
-    let mut i = 1;
-    if args.len() == 1 {
-        args.push("--daemon".to_string());
+    let mut should_daemonize = false;
+    let mut is_internal_daemon = false;
+    let mut debug_mode = false;
+
+    // First pass to check critical flags
+    for arg in &args {
+        match arg.as_str() {
+            "-d" | "--debug" => debug_mode = true,
+            "--daemon" => should_daemonize = true,
+            "--internal-daemon" => is_internal_daemon = true,
+            _ => {}
+        }
     }
+
+    // Default to daemon if no arguments and not already spawned as daemon child
+    if args.len() == 1 && !is_internal_daemon && !debug_mode {
+        should_daemonize = true;
+    }
+
+    // Parse remaining arguments
+    let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
             "-h" | "--help" => {
@@ -87,19 +104,6 @@ async fn main() -> anyhow::Result<()> {
             "-v" | "--version" => {
                 println!("inno {}", VERSION);
                 return Ok(());
-            }
-            "-d" | "--debug" => {
-                // Debug mode: just means we don't daemonize, and keep logs printing.
-                // Since eprintln! is already used for logs, we just let it be.
-            }
-            "--daemon" => {
-                println!("inno is running as a daemon. To stop it, use 'pkill inno'.");
-                unsafe {
-                    if libc::fork() != 0 {
-                        std::process::exit(0);
-                    }
-                    libc::setsid();
-                }
             }
             "-l" | "--log-file" => {
                 i += 1;
@@ -115,12 +119,45 @@ async fn main() -> anyhow::Result<()> {
         i += 1;
     }
 
-    // Redirect stderr to log file if specified
+    // Handle daemonization via self-respawn (safe alternative to fork)
+    if should_daemonize && !is_internal_daemon && !debug_mode {
+        println!("inno is running as a daemon. To stop it, use 'pkill inno'.");
+        use std::os::unix::process::CommandExt;
+        
+        let mut cmd = std::process::Command::new(&args[0]);
+        for arg in &args[1..] {
+            if arg != "--daemon" {
+                cmd.arg(arg);
+            }
+        }
+        cmd.arg("--internal-daemon");
+        
+        // Use pre_exec to call setsid in the child process (stable alternative)
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+
+        if let Some(ref path) = log_file {
+            if let Ok(file) = File::create(path) {
+                cmd.stderr(file);
+            }
+        }
+
+        cmd.spawn().expect("Failed to spawn background daemon");
+        std::process::exit(0);
+    }
+
+    // Redirect stderr to log file if specified and not already handled by spawn redirection
     if let Some(ref path) = log_file {
-        use std::os::unix::io::AsRawFd;
-        if let Ok(file) = File::create(path) {
-            unsafe {
-                libc::dup2(file.as_raw_fd(), 2);
+        if !is_internal_daemon {
+            use std::os::unix::io::AsRawFd;
+            if let Ok(file) = File::create(path) {
+                unsafe {
+                    libc::dup2(file.as_raw_fd(), 2);
+                }
             }
         }
     }
