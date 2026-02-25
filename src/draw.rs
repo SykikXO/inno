@@ -36,16 +36,17 @@ impl DrawState {
                 self.offset_y = 0.0;
             }
             Animation::Fade => {
-                // Fade in for first ~20 frames, hold, then will fade out before hide
                 self.visible = true;
-                let fade_in_duration = 20.0;
-                if t < fade_in_duration {
-                    self.alpha = (t / fade_in_duration).min(1.0);
-                } else {
-                    self.alpha = 1.0;
-                }
                 self.offset_x = 0.0;
                 self.offset_y = 0.0;
+                let fade_duration = total_frames * 0.2; // 20% of total time for fade in/out
+                if t < fade_duration {
+                    self.alpha = (t / fade_duration).min(1.0); // Fade in
+                } else if t > total_frames - fade_duration {
+                    self.alpha = ((total_frames - t) / fade_duration).max(0.0); // Fade out
+                } else {
+                    self.alpha = 1.0; // Fully visible
+                }
             }
             Animation::Slide => {
                 self.visible = true;

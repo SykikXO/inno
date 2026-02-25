@@ -354,9 +354,12 @@ async fn main() -> anyhow::Result<()> {
             }
 
             _ = &mut animation_timer, if animating => {
-                if let (Some(pct), Some(state), Some(text)) = (current_percentage, &current_state_str, &current_text) {
+                if let (Some(pct), Some(state), Some(text)) =
+                    (current_percentage, &current_state_str, &current_text)
+                {
                     if let Some(signal) = config.find_signal(pct, state) {
-                        draw_state.tick(&signal.animation);
+                        let total_frames = signal.duration as f64 * config::ANIMATION_FPS as f64;
+                        draw_state.tick(&signal.animation, total_frames);
                         app.draw_text_with_signal(text, &config, Some(signal), &draw_state);
                     }
                 }
