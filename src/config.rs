@@ -77,7 +77,8 @@ pub enum Animation {
     Blink,
     Pulse,
     Fade,
-    Slide,
+    SlideLeft,
+    SlideRight,
     Bounce,
 }
 
@@ -215,7 +216,8 @@ fn parse_animation(s: &str) -> Animation {
         "blink" | "flicker" => Animation::Blink,
         "pulse" => Animation::Pulse,
         "fade" | "fadein" | "fadeout" | "fade-in" | "fade-out" => Animation::Fade,
-        "slide" => Animation::Slide,
+        "slide" | "slideright" | "slide-right" => Animation::SlideRight,
+        "slideleft" | "slide-left" => Animation::SlideLeft,
         "bounce" => Animation::Bounce,
         _ => Animation::None,
     }

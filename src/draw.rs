@@ -50,11 +50,20 @@ impl DrawState {
                     self.alpha = 1.0; // Fully visible
                 }
             }
-            Animation::Slide => {
+            Animation::SlideRight => {
                 self.visible = true;
                 self.alpha = 1.0;
                 // Slide in from right, ease out
-                let progress = (t * 0.1).min(1.0);
+                let progress = (t * 0.05).min(1.0);
+                let eased = 1.0 - (1.0 - progress).powi(3);
+                self.offset_x = -(1.0 - eased) * 200.0;
+                self.offset_y = 0.0;
+            }
+            Animation::SlideLeft => {
+                self.visible = true;
+                self.alpha = 1.0;
+                // Slide in from left, ease out
+                let progress = (t * 0.05).min(1.0);
                 let eased = 1.0 - (1.0 - progress).powi(3);
                 self.offset_x = (1.0 - eased) * 200.0;
                 self.offset_y = 0.0;
