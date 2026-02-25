@@ -17,7 +17,7 @@ mod draw;
 mod events;
 mod layer;
 
-use config::{ANIMATION_INTERVAL_MS, AppConfig, HIDE_TIMEOUT_SECS};
+use config::{AppConfig, HIDE_TIMEOUT_SECS};
 use control::ControlEvent;
 use dbus::Event;
 use draw::{DrawState, format_text};
@@ -271,7 +271,7 @@ async fn main() -> anyhow::Result<()> {
     let mut draw_state = DrawState::default();
     let mut hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
     let mut animation_timer =
-        Box::pin(tokio::time::sleep(Duration::from_millis(ANIMATION_INTERVAL_MS)));
+        Box::pin(tokio::time::sleep(Duration::from_micros(1_000_000 / config.fps)));
     let mut animating = false;
     let mut current_percentage: Option<f64> = None;
     let mut current_state_str: Option<String> = None;
@@ -283,6 +283,7 @@ async fn main() -> anyhow::Result<()> {
         config::Animation::SlideLeft,
         config::Animation::Bounce,
     ];
+    let mut current_test_anim: Option<config::Animation> = None;
     let mut test_anim_idx = specific_test_anim.unwrap_or(0);
     let mut test_timer = Box::pin(tokio::time::sleep(Duration::from_secs(0)));
 
@@ -308,6 +309,8 @@ async fn main() -> anyhow::Result<()> {
                 eprintln!("Config file changed, reloading...");
                 config = AppConfig::load();
                 eprintln!("inno: reloaded {} signals", config.signals.len());
+                // Update animation interval if FPS changed
+                animation_timer = Box::pin(tokio::time::sleep(Duration::from_micros(1_000_000 / config.fps)));
             }
 
             // DBus control events
@@ -395,10 +398,12 @@ async fn main() -> anyhow::Result<()> {
             }
 
             _ = &mut test_timer, if test_animations => {
-                let anim = &test_animations_list[test_anim_idx];
+                let anim = test_animations_list[test_anim_idx].clone();
+                current_test_anim = Some(anim.clone());
+
                 let anim_name = format!("{:?}", anim);
                 eprintln!("Testing animation: {}", anim_name);
-                
+
                 let test_signal = config::Signal {
                     message: format!("Testing {}", anim_name),
                     icon: "󰚗".to_string(), // Test icon
@@ -406,7 +411,7 @@ async fn main() -> anyhow::Result<()> {
                     color: (0.2, 0.8, 0.2, 1.0),
                     threshold: 0.0,
                     state_filter: "any".to_string(),
-                    animation: anim.clone(),
+                    animation: anim,
                     duration: 10,
                     sound: None,
                 };
@@ -422,7 +427,7 @@ async fn main() -> anyhow::Result<()> {
                 draw_state.reset();
                 app.draw_text_with_signal(&text, &config, Some(&test_signal), &draw_state);
                 hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(10)));
-                
+
                 if let Some(fixed_idx) = specific_test_anim {
                     test_anim_idx = fixed_idx;
                     test_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
@@ -430,35 +435,35 @@ async fn main() -> anyhow::Result<()> {
                     test_anim_idx = (test_anim_idx + 1) % test_animations_list.len();
                     test_timer = Box::pin(tokio::time::sleep(Duration::from_secs(12)));
                 }
+                animating = true;
             }
 
             _ = &mut animation_timer, if animating => {
                 if test_animations {
-                     let anim = &test_animations_list[test_anim_idx];
-                     let test_signal = config::Signal {
-                        message: format!("Testing {:?}", anim),
-                        icon: "󰚗".to_string(),
-                        icon_size: 24.0,
-                        color: (0.2, 0.8, 0.2, 1.0),
-                        threshold: 0.0,
-                        state_filter: "any".to_string(),
-                        animation: anim.clone(),
-                        duration: 10,
-                        sound: None,
-                    };
-                    if let Some(text) = &current_text {
-                        let total_frames = test_signal.duration as f64 * config::ANIMATION_FPS as f64;
-                        draw_state.tick(&test_signal.animation, total_frames);
+                     if let (Some(anim), Some(text)) = (current_test_anim.clone(), &current_text) {
+                         let test_signal = config::Signal {
+                            message: format!("Testing {:?}", anim),
+                            icon: "󰚗".to_string(),
+                            icon_size: 24.0,
+                            color: (0.2, 0.8, 0.2, 1.0),
+                            threshold: 0.0,
+                            state_filter: "any".to_string(),
+                            animation: anim,
+                            duration: 10,
+                            sound: None,
+                        };
+                        let total_frames = test_signal.duration as f64 * config.fps as f64;
+                        draw_state.tick(&test_signal.animation, total_frames, config.fps as f64);
                         app.draw_text_with_signal(text, &config, Some(&test_signal), &draw_state);
                     }
                 } else if let (Some(pct), Some(state), Some(text)) = (current_percentage, &current_state_str, &current_text) {
                     if let Some(signal) = config.find_signal(pct, state) {
-                        let total_frames = signal.duration as f64 * config::ANIMATION_FPS as f64;
-                        draw_state.tick(&signal.animation, total_frames);
+                        let total_frames = signal.duration as f64 * config.fps as f64;
+                        draw_state.tick(&signal.animation, total_frames, config.fps as f64);
                         app.draw_text_with_signal(text, &config, Some(signal), &draw_state);
                     }
                 }
-                animation_timer = Box::pin(tokio::time::sleep(Duration::from_millis(ANIMATION_INTERVAL_MS)));
+                animation_timer = Box::pin(tokio::time::sleep(Duration::from_micros(1_000_000 / config.fps)));
             }
 
             _ = &mut hide_timer => {

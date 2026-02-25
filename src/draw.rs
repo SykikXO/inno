@@ -3,6 +3,7 @@ use cairo::{Context, LinearGradient};
 use std::f64::consts::PI;
 
 const V_PADDING_TOP: f64 = 60.0; // Space for upward animations
+const V_PADDING_BOTTOM: f64 = 60.0; // Space for downward animations
 
 #[derive(Debug, Clone)]
 pub struct DrawState {
@@ -20,7 +21,7 @@ impl Default for DrawState {
 }
 
 impl DrawState {
-    pub fn tick(&mut self, anim: &Animation, total_frames: f64) {
+    pub fn tick(&mut self, anim: &Animation, total_frames: f64, fps: f64) {
         self.frame = self.frame.wrapping_add(1);
         let t = self.frame as f64;
 
@@ -41,11 +42,16 @@ impl DrawState {
                 self.visible = true;
                 self.offset_x = 0.0;
                 self.offset_y = 0.0;
-                let fade_duration = total_frames * 0.2; // 20% of total time for fade in/out
+                // Consistent 0.5s fade, but finish slightly earlier than total_frames
+                // to avoid being cut off by the hide_timer race.
+                let fade_duration = (fps * 0.5).min(total_frames / 3.0);
+                let fade_end = total_frames - 1.0; // Finish 1 frame early
+                let fade_out_start = total_frames - fade_duration - 1.0;
+
                 if t < fade_duration {
                     self.alpha = (t / fade_duration).min(1.0); // Fade in
-                } else if t > total_frames - fade_duration {
-                    self.alpha = ((total_frames - t) / fade_duration).max(0.0); // Fade out
+                } else if t > fade_out_start {
+                    self.alpha = ((fade_end - t) / fade_duration).max(0.0).min(1.0); // Fade out
                 } else {
                     self.alpha = 1.0; // Fully visible
                 }
@@ -73,7 +79,7 @@ impl DrawState {
                 self.alpha = 1.0;
                 self.offset_x = 0.0;
                 // Parabolic bounce with decay
-                let period = 25.0; // Snappier period
+                let period = 0.5 * fps; // Snappy 0.5s period
                 let local_t = (t % period) / period;
                 let height = 4.0 * local_t * (1.0 - local_t); // Parabola: y = 4x(1-x)
                 let bounce_num = (t / period).floor();
@@ -141,14 +147,6 @@ pub fn draw_with_signal(
         return (1, 1);
     }
 
-    // Fade complete (alpha near zero means completely faded)
-    if signal.is_some_and(|s| s.animation == Animation::Fade) && state.alpha <= 0.01 {
-        cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
-        cr.set_operator(cairo::Operator::Source);
-        cr.paint().unwrap();
-        return (1, 1);
-    }
-
     let alpha = state.alpha;
 
     // Select font and measure icon
@@ -168,7 +166,7 @@ pub fn draw_with_signal(
 
     let w = ext.width().ceil() as i32 + 20 + icon_w as i32;
     let h_content = ext.height().ceil() as f64 + 20.0;
-    let h = (h_content + V_PADDING_TOP) as i32;
+    let h = (h_content + V_PADDING_TOP + V_PADDING_BOTTOM) as i32;
 
     // Clear canvas
     cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);

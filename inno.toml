@@ -7,6 +7,7 @@ font_slant = "normal"    # normal, italic, oblique
 font_weight = "normal"   # normal, bold
 position = "center,bottom,10"
 format = "{message} {percent}%"
+fps = 60
 
 [appearance]
 text_color = [1.0, 1.0, 1.0, 1.0]
@@ -35,7 +36,7 @@ icon_size = 24
 color = "white"
 threshold = 100
 state = "discharging"
-animation = "none"
+animation = "bounce"
 duration = 2
 
 [[signal]]

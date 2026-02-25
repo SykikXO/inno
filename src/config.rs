@@ -8,8 +8,6 @@ use thiserror::Error;
 pub const DEFAULT_MARGIN: i32 = 10;
 pub const DEFAULT_FONT_SIZE: f64 = 24.0;
 pub const DEFAULT_ICON_SIZE: f64 = 24.0;
-pub const ANIMATION_FPS: u64 = 30;
-pub const ANIMATION_INTERVAL_MS: u64 = 1000 / ANIMATION_FPS;
 pub const HIDE_TIMEOUT_SECS: u64 = 86400;
 
 #[derive(Debug, Error)]
@@ -190,7 +188,7 @@ impl Default for AppConfig {
             format: "{message} {percent}%".to_string(),
             output: OutputMode::Primary,
             battery_mode: BatteryMode::First,
-            fps: ANIMATION_FPS,
+            fps: 30,
             config_path: None,
         }
     }
@@ -317,6 +315,9 @@ impl AppConfig {
             }
             if let Some(bm) = general.battery_mode {
                 self.battery_mode = parse_battery_mode(&bm);
+            }
+            if let Some(fps) = general.fps {
+                self.fps = fps;
             }
         }
 
