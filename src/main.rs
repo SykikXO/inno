@@ -36,6 +36,8 @@ OPTIONS:
     --daemon                Run in background (daemon mode)
     -l, --log-file <PATH>   Log output to file (useful with --daemon)
     --no-dbus               Disable DBus control interface
+    --test <number>         Preview specific animation (1-6)
+    --test-animations       Cycle through all animations for testing
 
 CONFIG:
     ~/.config/inno/inno.toml   (main config)
@@ -73,9 +75,11 @@ fn play_sound(path: &PathBuf) {
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let mut log_file: Option<PathBuf> = None;
-    let mut enable_dbus = true;
+    let enable_dbus = true;
     let mut debug_mode = false;
     let mut is_internal_daemon = false;
+    let mut test_animations = false;
+    let mut specific_test_anim: Option<usize> = None;
 
     // First pass to check critical flags
     for arg in &args {
@@ -85,6 +89,10 @@ async fn main() -> anyhow::Result<()> {
             }
             "--internal-daemon" => {
                 is_internal_daemon = true;
+            }
+            "--test-animations" => {
+                test_animations = true;
+                debug_mode = true; // Always enable debug for testing
             }
             _ => {}
         }
@@ -108,8 +116,20 @@ async fn main() -> anyhow::Result<()> {
                     log_file = Some(PathBuf::from(&args[i]));
                 }
             }
-            "--no-dbus" => {
-                enable_dbus = false;
+            "--test-animations" => {
+                test_animations = true;
+            }
+            "--test" => {
+                i += 1;
+                if i < args.len() {
+                    if let Ok(idx) = args[i].parse::<usize>() {
+                        if (1..=6).contains(&idx) {
+                            specific_test_anim = Some(idx - 1);
+                            test_animations = true;
+                            debug_mode = true;
+                        }
+                    }
+                }
             }
             _ => {}
         }
@@ -221,11 +241,15 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Start DBus event listener with configurable events
-    tokio::spawn(async move {
-        if let Err(e) = dbus::run_dbus_listener(tx, event_configs).await {
-            eprintln!("DBus error: {}", e);
-        }
-    });
+    if !test_animations {
+        tokio::spawn(async move {
+            if let Err(e) = dbus::run_dbus_listener(tx, event_configs).await {
+                eprintln!("DBus error: {}", e);
+            }
+        });
+    } else {
+        eprintln!("Skipping DBus listener in testing mode.");
+    }
 
     let conn = Connection::connect_to_env()?;
     let mut event_queue = conn.new_event_queue();
@@ -251,6 +275,23 @@ async fn main() -> anyhow::Result<()> {
     let mut animating = false;
     let mut current_percentage: Option<f64> = None;
     let mut current_state_str: Option<String> = None;
+    let test_animations_list = vec![
+        config::Animation::Blink,
+        config::Animation::Pulse,
+        config::Animation::Fade,
+        config::Animation::SlideRight,
+        config::Animation::SlideLeft,
+        config::Animation::Bounce,
+    ];
+    let mut test_anim_idx = specific_test_anim.unwrap_or(0);
+    let mut test_timer = Box::pin(tokio::time::sleep(Duration::from_secs(0)));
+
+    if test_animations {
+        eprintln!("Animation testing mode enabled.");
+        animating = true;
+        current_percentage = Some(50.0);
+        current_state_str = Some("testing".to_string());
+    }
 
     loop {
         event_queue.dispatch_pending(&mut app)?;
@@ -353,10 +394,64 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
+            _ = &mut test_timer, if test_animations => {
+                let anim = &test_animations_list[test_anim_idx];
+                let anim_name = format!("{:?}", anim);
+                eprintln!("Testing animation: {}", anim_name);
+                
+                let test_signal = config::Signal {
+                    message: format!("Testing {}", anim_name),
+                    icon: "󰚗".to_string(), // Test icon
+                    icon_size: 24.0,
+                    color: (0.2, 0.8, 0.2, 1.0),
+                    threshold: 0.0,
+                    state_filter: "any".to_string(),
+                    animation: anim.clone(),
+                    duration: 10,
+                    sound: None,
+                };
+
+                let text = format_text(
+                    &config.format,
+                    &test_signal.icon,
+                    &test_signal.message,
+                    50.0,
+                );
+
+                current_text = Some(text.clone());
+                draw_state.reset();
+                app.draw_text_with_signal(&text, &config, Some(&test_signal), &draw_state);
+                hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(10)));
+                
+                if let Some(fixed_idx) = specific_test_anim {
+                    test_anim_idx = fixed_idx;
+                    test_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
+                } else {
+                    test_anim_idx = (test_anim_idx + 1) % test_animations_list.len();
+                    test_timer = Box::pin(tokio::time::sleep(Duration::from_secs(12)));
+                }
+            }
+
             _ = &mut animation_timer, if animating => {
-                if let (Some(pct), Some(state), Some(text)) =
-                    (current_percentage, &current_state_str, &current_text)
-                {
+                if test_animations {
+                     let anim = &test_animations_list[test_anim_idx];
+                     let test_signal = config::Signal {
+                        message: format!("Testing {:?}", anim),
+                        icon: "󰚗".to_string(),
+                        icon_size: 24.0,
+                        color: (0.2, 0.8, 0.2, 1.0),
+                        threshold: 0.0,
+                        state_filter: "any".to_string(),
+                        animation: anim.clone(),
+                        duration: 10,
+                        sound: None,
+                    };
+                    if let Some(text) = &current_text {
+                        let total_frames = test_signal.duration as f64 * config::ANIMATION_FPS as f64;
+                        draw_state.tick(&test_signal.animation, total_frames);
+                        app.draw_text_with_signal(text, &config, Some(&test_signal), &draw_state);
+                    }
+                } else if let (Some(pct), Some(state), Some(text)) = (current_percentage, &current_state_str, &current_text) {
                     if let Some(signal) = config.find_signal(pct, state) {
                         let total_frames = signal.duration as f64 * config::ANIMATION_FPS as f64;
                         draw_state.tick(&signal.animation, total_frames);
@@ -374,6 +469,11 @@ async fn main() -> anyhow::Result<()> {
                     animating = false;
                     draw_state.reset();
                     hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
+
+                    if specific_test_anim.is_some() {
+                        println!("Specific test completed, exiting.");
+                        break;
+                    }
                 }
             }
 

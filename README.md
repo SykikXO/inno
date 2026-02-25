@@ -82,7 +82,7 @@ icon_size = 28
 color = "green"
 threshold = 0
 state = "charging"      # charging, discharging, full, any
-animation = "fade"      # none, fade, pulse, blink, slide, bounce
+animation = "fade"      # none, fade, pulse, blink, slideleft, slideright, bounce
 duration = 2
 # sound = "/path/to/sound.wav"  # optional
 ```
