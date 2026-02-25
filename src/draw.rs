@@ -20,7 +20,7 @@ impl Default for DrawState {
 }
 
 impl DrawState {
-    pub fn tick(&mut self, anim: &Animation) {
+    pub fn tick(&mut self, anim: &Animation, total_frames: f64) {
         self.frame = self.frame.wrapping_add(1);
         let t = self.frame as f64;
 
