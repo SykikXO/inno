@@ -9,6 +9,7 @@ license=('MIT')
 depends=('wayland' 'cairo' 'dbus' 'glibc')
 makedepends=('rust' 'cargo')
 backup=('etc/xdg/inno/inno.conf')
+install=inno.install
 source=()
 md5sums=()
 
@@ -21,5 +22,4 @@ package() {
   cd "$srcdir/.."
   install -Dm755 target/release/inno "$pkgdir/usr/bin/inno"
   install -Dm644 inno.conf "$pkgdir/etc/xdg/inno/inno.conf"
-  install -Dm644 inno.service "$pkgdir/usr/lib/systemd/user/inno.service"
 }

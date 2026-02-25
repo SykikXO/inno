@@ -225,11 +225,8 @@ inno --no-dbus          # Disable control interface
 inno -h                 # Help
 ```
 
-### Systemd Integration
-```bash
-systemctl --user enable inno.service
-systemctl --user start inno.service
 ```
+
 
 ## License
 

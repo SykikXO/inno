@@ -1,0 +1,30 @@
+post_install() {
+  _cleanup_legacy_service
+}
+
+post_upgrade() {
+  _cleanup_legacy_service
+}
+
+_cleanup_legacy_service() {
+  local service_files=(
+    "/usr/lib/systemd/user/inno.service"
+    "/etc/systemd/user/inno.service"
+    "/usr/lib/systemd/system/inno.service"
+    "/etc/systemd/system/inno.service"
+  )
+
+  local found=0
+  for f in "${service_files[@]}"; do
+    if [ -f "$f" ]; then
+      echo "  -> Removing legacy systemd service: $f"
+      rm -f "$f"
+      found=1
+    fi
+  done
+
+  if [ $found -eq 1 ]; then
+    echo "  -> [IMPORTANT] inno systemd service has been removed."
+    echo "  -> If you had it enabled, please run: systemctl --user disable inno.service"
+  fi
+}
