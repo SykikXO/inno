@@ -44,6 +44,7 @@ struct GeneralConfig {
     format: Option<String>,
     output: Option<String>,
     battery_mode: Option<String>,
+    fps: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -168,6 +169,7 @@ pub struct AppConfig {
     pub format: String,
     pub output: OutputMode,
     pub battery_mode: BatteryMode,
+    pub fps: u64,
     pub config_path: Option<PathBuf>,
 }
 
@@ -187,6 +189,7 @@ impl Default for AppConfig {
             format: "{message} {percent}%".to_string(),
             output: OutputMode::Primary,
             battery_mode: BatteryMode::First,
+            fps: ANIMATION_FPS,
             config_path: None,
         }
     }

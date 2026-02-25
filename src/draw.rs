@@ -2,6 +2,8 @@ use crate::config::{Animation, AppConfig, Signal};
 use cairo::{Context, LinearGradient};
 use std::f64::consts::PI;
 
+const V_PADDING_TOP: f64 = 60.0; // Space for upward animations
+
 #[derive(Debug, Clone)]
 pub struct DrawState {
     pub frame: u32,
@@ -61,9 +63,13 @@ impl DrawState {
                 self.visible = true;
                 self.alpha = 1.0;
                 self.offset_x = 0.0;
-                // Bouncing effect
-                let bounce = (t * 0.2).sin().abs() * (1.0 / (1.0 + t * 0.02));
-                self.offset_y = -bounce * 20.0;
+                // Parabolic bounce with decay
+                let period = 25.0; // Snappier period
+                let local_t = (t % period) / period;
+                let height = 4.0 * local_t * (1.0 - local_t); // Parabola: y = 4x(1-x)
+                let bounce_num = (t / period).floor();
+                let decay = 1.0_f64.powf(bounce_num);
+                self.offset_y = -height * 35.0 * decay;
             }
             Animation::None => {
                 self.visible = true;
@@ -152,17 +158,22 @@ pub fn draw_with_signal(
     let ext = cr.text_extents(text).unwrap();
 
     let w = ext.width().ceil() as i32 + 20 + icon_w as i32;
-    let h = ext.height().ceil() as i32 + 20;
+    let h_content = ext.height().ceil() as f64 + 20.0;
+    let h = (h_content + V_PADDING_TOP) as i32;
 
     // Clear canvas
     cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
     cr.set_operator(cairo::Operator::Source);
     cr.paint().unwrap();
 
+    // Apply animation offsets and padding
+    cr.translate(state.offset_x, state.offset_y + V_PADDING_TOP);
+
     // Draw background (with optional gradient and rounded corners)
     cr.set_operator(cairo::Operator::Over);
 
     if config.gradient {
+        // Create an attractive internal visual gradient
         let gradient = LinearGradient::new(0.0, 0.0, w as f64, 0.0);
         gradient.add_color_stop_rgba(0.0, r_bg, g_bg, b_bg, a_bg * alpha);
         gradient.add_color_stop_rgba(1.0, r_bg * 0.7, g_bg * 0.7, b_bg * 0.7, a_bg * alpha * 0.8);
@@ -172,10 +183,10 @@ pub fn draw_with_signal(
     }
 
     if config.border_radius > 0.0 {
-        rounded_rect(cr, 0.0, 0.0, w as f64, h as f64, config.border_radius);
+        rounded_rect(cr, 0.0, 0.0, w as f64, h_content, config.border_radius);
         cr.fill().unwrap();
     } else {
-        cr.rectangle(0.0, 0.0, w as f64, h as f64);
+        cr.rectangle(0.0, 0.0, w as f64, h_content);
         cr.fill().unwrap();
     }
 
@@ -186,7 +197,7 @@ pub fn draw_with_signal(
             cr.set_source_rgba(r, g, b, a * alpha);
             cr.move_to(
                 10.0 - icon_ext.x_bearing(),
-                h as f64 / 2.0 - (icon_ext.height() / 2.0 + icon_ext.y_bearing()),
+                h_content / 2.0 - (icon_ext.height() / 2.0 + icon_ext.y_bearing()),
             );
             cr.show_text(&s.icon).unwrap();
             cr.set_font_size(config.font_size);
@@ -200,7 +211,7 @@ pub fn draw_with_signal(
 
     // Draw text
     cr.set_source_rgba(r, g, b, a * alpha);
-    cr.move_to(text_x, h as f64 / 2.0 - (ext.height() / 2.0 + ext.y_bearing()));
+    cr.move_to(text_x, h_content / 2.0 - (ext.height() / 2.0 + ext.y_bearing()));
     cr.show_text(text).unwrap();
 
     (w, h)
