@@ -459,27 +459,38 @@ impl AppConfig {
         })
     }
 
+    #[allow(dead_code)]
     pub fn find_signal(&self, pct: f64, state: &str) -> Option<&Signal> {
+        self.find_signal_idx(pct, state).map(|i| &self.signals[i])
+    }
+
+    /// Returns the index of the best matching signal, avoiding allocation
+    /// when only the index is needed (e.g. for caching during animation).
+    pub fn find_signal_idx(&self, pct: f64, state: &str) -> Option<usize> {
         let is_charging = state.eq_ignore_ascii_case("charging");
 
-        let mut matches: Vec<&Signal> = self
-            .signals
-            .iter()
-            .filter(|s| {
-                let state_match =
-                    s.state_filter == "any" || s.state_filter.eq_ignore_ascii_case(state);
-                let threshold_match =
-                    if is_charging { pct >= s.threshold } else { pct <= s.threshold };
-                state_match && threshold_match
-            })
-            .collect();
+        let mut best_idx: Option<usize> = None;
+        let mut best_threshold: f64 = if is_charging { f64::MIN } else { f64::MAX };
 
-        if is_charging {
-            matches.sort_by(|a, b| b.threshold.partial_cmp(&a.threshold).unwrap());
-        } else {
-            matches.sort_by(|a, b| a.threshold.partial_cmp(&b.threshold).unwrap());
+        for (i, s) in self.signals.iter().enumerate() {
+            let state_match =
+                s.state_filter == "any" || s.state_filter.eq_ignore_ascii_case(state);
+            let threshold_match =
+                if is_charging { pct >= s.threshold } else { pct <= s.threshold };
+
+            if state_match && threshold_match {
+                let is_better = if is_charging {
+                    s.threshold > best_threshold
+                } else {
+                    s.threshold < best_threshold
+                };
+                if best_idx.is_none() || is_better {
+                    best_idx = Some(i);
+                    best_threshold = s.threshold;
+                }
+            }
         }
 
-        matches.first().copied()
+        best_idx
     }
 }

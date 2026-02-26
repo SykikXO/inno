@@ -274,8 +274,8 @@ async fn main() -> anyhow::Result<()> {
     let mut animation_timer =
         Box::pin(tokio::time::sleep(Duration::from_micros(1_000_000 / config.fps)));
     let mut animating = false;
-    let mut current_percentage: Option<f64> = None;
-    let mut current_state_str: Option<String> = None;
+    // Cache current signal index to avoid re-searching every animation frame
+    let mut current_signal_idx: Option<usize> = None;
     let test_animations_list = vec![
         config::Animation::Blink,
         config::Animation::Pulse,
@@ -284,15 +284,13 @@ async fn main() -> anyhow::Result<()> {
         config::Animation::SlideLeft,
         config::Animation::Bounce,
     ];
-    let mut current_test_anim: Option<config::Animation> = None;
+    let mut current_test_signal: Option<config::Signal> = None;
     let mut test_anim_idx = specific_test_anim.unwrap_or(0);
     let mut test_timer = Box::pin(tokio::time::sleep(Duration::from_secs(0)));
 
     if test_animations {
         eprintln!("Animation testing mode enabled.");
         animating = true;
-        current_percentage = Some(50.0);
-        current_state_str = Some("testing".to_string());
     }
 
     loop {
@@ -353,12 +351,12 @@ async fn main() -> anyhow::Result<()> {
                             }
                         }
 
-                        // Get percentage and state for signal matching
-                        let pct_opt = notify_event.percentage;
+                        let pct_for_match = notify_event.percentage.unwrap_or(100.0);
                         let state = notify_event.state.clone().unwrap_or_else(|| "unknown".to_string());
 
-                        // Find matching signal from config using a fallback of 100.0 just for threshold comparison
-                        let signal = config.find_signal(pct_opt.unwrap_or(100.0), &state);
+                        // Find matching signal and cache its index for animation frames
+                        let sig_idx = config.find_signal_idx(pct_for_match, &state);
+                        let signal = sig_idx.map(|i| &config.signals[i]);
                         let signal_msg = signal.map(|s| s.message.clone());
 
                         let state_key = format!("{}:{}", notify_event.event_name, notify_event.path);
@@ -369,7 +367,7 @@ async fn main() -> anyhow::Result<()> {
                         let signal_changed = prev_sig != &signal_msg;
 
                         if state_changed || signal_changed {
-                            if let Some(p) = pct_opt {
+                            if let Some(p) = notify_event.percentage {
                                 println!("Notify: {:.0}% {} ({}) (state={}, signal={})",
                                     p, notify_event.event_name, notify_event.path, state_changed, signal_changed);
                             } else {
@@ -378,8 +376,6 @@ async fn main() -> anyhow::Result<()> {
                             }
 
                             if let Some(sig) = signal {
-                                // Format text using config format string
-                                // Replaces any instance of {message} in the sig.message with the dynamic notify_event string
                                 let dynamic_msg = sig.message.replace("{message}", &notify_event.message);
 
                                 let text = format_text(
@@ -389,7 +385,6 @@ async fn main() -> anyhow::Result<()> {
                                     notify_event.percentage,
                                 );
 
-                                // Play sound if configured
                                 if let Some(ref sound_path) = sig.sound {
                                     play_sound(sound_path);
                                 }
@@ -397,29 +392,26 @@ async fn main() -> anyhow::Result<()> {
                                 draw_state.reset();
                                 app.draw_text_with_signal(&text, &config, Some(sig), &draw_state);
                                 animating = sig.animation != config::Animation::None;
+                                current_signal_idx = sig_idx;
                                 hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(sig.duration)));
                                 current_text = Some(text);
                             }
                         }
 
-                        prev_state.insert(state_key.clone(), Some(state.clone()));
+                        prev_state.insert(state_key.clone(), Some(state));
                         prev_signal_msg.insert(state_key, signal_msg);
-                        current_percentage = pct_opt;
-                        current_state_str = Some(state);
                     }
                 }
             }
 
             _ = &mut test_timer, if test_animations => {
                 let anim = test_animations_list[test_anim_idx].clone();
-                current_test_anim = Some(anim.clone());
-
                 let anim_name = format!("{:?}", anim);
                 eprintln!("Testing animation: {}", anim_name);
 
                 let test_signal = config::Signal {
                     message: format!("Testing {}", anim_name),
-                    icon: "󰚗".to_string(), // Test icon
+                    icon: "󰚗".to_string(),
                     icon_size: 24.0,
                     color: (0.2, 0.8, 0.2, 1.0),
                     threshold: 0.0,
@@ -439,6 +431,7 @@ async fn main() -> anyhow::Result<()> {
                 current_text = Some(text.clone());
                 draw_state.reset();
                 app.draw_text_with_signal(&text, &config, Some(&test_signal), &draw_state);
+                current_test_signal = Some(test_signal);
                 hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(10)));
 
                 if let Some(fixed_idx) = specific_test_anim {
@@ -452,25 +445,17 @@ async fn main() -> anyhow::Result<()> {
             }
 
             _ = &mut animation_timer, if animating => {
-                if test_animations {
-                     if let (Some(anim), Some(text)) = (current_test_anim.clone(), &current_text) {
-                         let test_signal = config::Signal {
-                            message: format!("Testing {:?}", anim),
-                            icon: "󰚗".to_string(),
-                            icon_size: 24.0,
-                            color: (0.2, 0.8, 0.2, 1.0),
-                            threshold: 0.0,
-                            state_filter: "any".to_string(),
-                            animation: anim,
-                            duration: 10,
-                            sound: None,
-                        };
-                        let total_frames = test_signal.duration as f64 * config.fps as f64;
-                        draw_state.tick(&test_signal.animation, total_frames, config.fps as f64);
-                        app.draw_text_with_signal(text, &config, Some(&test_signal), &draw_state);
-                    }
-                } else if let (Some(pct), Some(state), Some(text)) = (current_percentage, &current_state_str, &current_text) {
-                    if let Some(signal) = config.find_signal(pct, state) {
+                if let Some(text) = &current_text {
+                    if test_animations {
+                        // Reuse the cached test signal instead of recreating it every frame
+                        if let Some(ref sig) = current_test_signal {
+                            let total_frames = sig.duration as f64 * config.fps as f64;
+                            draw_state.tick(&sig.animation, total_frames, config.fps as f64);
+                            app.draw_text_with_signal(text, &config, Some(sig), &draw_state);
+                        }
+                    } else if let Some(idx) = current_signal_idx {
+                        // Use cached signal index instead of re-searching every frame
+                        let signal = &config.signals[idx];
                         let total_frames = signal.duration as f64 * config.fps as f64;
                         draw_state.tick(&signal.animation, total_frames, config.fps as f64);
                         app.draw_text_with_signal(text, &config, Some(signal), &draw_state);
