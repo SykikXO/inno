@@ -8,12 +8,6 @@ url="https://github.com/SykikXO/inno"
 license=('MIT')
 depends=('wayland' 'cairo' 'dbus' 'glibc' 'ttf-jetbrains-mono-nerd')
 makedepends=('rust' 'cargo')
-backup=('etc/xdg/inno/inno.toml'
-        'etc/xdg/inno/events/battery.toml'
-        'etc/xdg/inno/events/bluetooth.toml'
-        'etc/xdg/inno/events/laptop_battery.toml'
-        'etc/xdg/inno/events/headset_battery.toml')
-install=inno.install
 source=()
 md5sums=()
 
