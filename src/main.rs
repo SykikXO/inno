@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::io::unix::AsyncFd;
+use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 mod config;
@@ -266,8 +267,8 @@ async fn main() -> anyhow::Result<()> {
     let async_fd = AsyncFd::new(fd)?;
 
     let mut current_text: Option<String> = None;
-    let mut prev_state: Option<String> = None;
-    let mut prev_signal_msg: Option<String> = None;
+    let mut prev_state: HashMap<String, Option<String>> = HashMap::new();
+    let mut prev_signal_msg: HashMap<String, Option<String>> = HashMap::new();
     let mut draw_state = DrawState::default();
     let mut hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
     let mut animation_timer =
@@ -353,27 +354,39 @@ async fn main() -> anyhow::Result<()> {
                         }
 
                         // Get percentage and state for signal matching
-                        let pct = notify_event.percentage.unwrap_or(100.0);
+                        let pct_opt = notify_event.percentage;
                         let state = notify_event.state.clone().unwrap_or_else(|| "unknown".to_string());
 
-                        // Find matching signal from config
-                        let signal = config.find_signal(pct, &state);
+                        // Find matching signal from config using a fallback of 100.0 just for threshold comparison
+                        let signal = config.find_signal(pct_opt.unwrap_or(100.0), &state);
                         let signal_msg = signal.map(|s| s.message.clone());
 
-                        let state_changed = prev_state.as_ref() != Some(&state);
-                        let signal_changed = prev_signal_msg != signal_msg;
+                        let state_key = format!("{}:{}", notify_event.event_name, notify_event.path);
+                        let prev_s = prev_state.get(&state_key).unwrap_or(&None);
+                        let state_changed = prev_s.as_ref() != Some(&state);
+
+                        let prev_sig = prev_signal_msg.get(&state_key).unwrap_or(&None);
+                        let signal_changed = prev_sig != &signal_msg;
 
                         if state_changed || signal_changed {
-                            println!("Notify: {:.0}% {} (state={}, signal={})",
-                                pct, notify_event.event_name, state_changed, signal_changed);
+                            if let Some(p) = pct_opt {
+                                println!("Notify: {:.0}% {} ({}) (state={}, signal={})",
+                                    p, notify_event.event_name, notify_event.path, state_changed, signal_changed);
+                            } else {
+                                println!("Notify: {} ({}) (state={}, signal={})",
+                                    notify_event.event_name, notify_event.path, state_changed, signal_changed);
+                            }
 
                             if let Some(sig) = signal {
                                 // Format text using config format string
+                                // Replaces any instance of {message} in the sig.message with the dynamic notify_event string
+                                let dynamic_msg = sig.message.replace("{message}", &notify_event.message);
+
                                 let text = format_text(
                                     &config.format,
                                     &sig.icon,
-                                    &sig.message,
-                                    pct,
+                                    &dynamic_msg,
+                                    notify_event.percentage,
                                 );
 
                                 // Play sound if configured
@@ -389,9 +402,9 @@ async fn main() -> anyhow::Result<()> {
                             }
                         }
 
-                        prev_state = Some(state.clone());
-                        prev_signal_msg = signal_msg;
-                        current_percentage = Some(pct);
+                        prev_state.insert(state_key.clone(), Some(state.clone()));
+                        prev_signal_msg.insert(state_key, signal_msg);
+                        current_percentage = pct_opt;
                         current_state_str = Some(state);
                     }
                 }
@@ -420,7 +433,7 @@ async fn main() -> anyhow::Result<()> {
                     &config.format,
                     &test_signal.icon,
                     &test_signal.message,
-                    50.0,
+                    Some(50.0),
                 );
 
                 current_text = Some(text.clone());

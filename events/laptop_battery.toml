@@ -1,0 +1,24 @@
+name = "Laptop Battery"
+enabled = true
+bus = "system"
+
+[match]
+interface = "org.freedesktop.DBus.Properties"
+member = "PropertiesChanged"
+arg0 = "org.freedesktop.UPower.Device"
+path_prefix = "/org/freedesktop/UPower/devices/battery_BAT"
+
+[extract]
+percentage = "Percentage"
+state = "State"
+
+[state_map]
+"1" = "charging"
+"2" = "discharging"
+"4" = "full"
+
+[format]
+message = "{percentage}%"
+
+[conditions]
+debounce_ms = 1000

@@ -1,0 +1,27 @@
+name = "Bluetooth Connection"
+enabled = true
+bus = "system"
+
+[match]
+interface = "org.freedesktop.DBus.Properties"
+member = "PropertiesChanged"
+arg0 = "org.bluez.Device1"
+# We won't restrict path_prefix so it captures any Bluetooth device.
+
+[extract]
+# We're extracting the "Connected" boolean property from PropertiesChanged!
+# Since we just need the state (and we map it to our pseudo-state "connected/disconnected"), we'll call it state.
+state = "Connected"
+
+[state_map]
+# The DBus connected property is a boolean (true/false)
+"true" = "connected"
+"false" = "disconnected"
+
+[format]
+# Message to show when Bluetooth connection changes
+message = "{name} {state}"
+
+[conditions]
+trigger_on = ["Connected"]
+debounce_ms = 500

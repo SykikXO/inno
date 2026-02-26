@@ -14,6 +14,7 @@ use zbus::zvariant::Value;
 #[derive(Debug, Clone)]
 pub struct NotifyEvent {
     pub event_name: String,
+    pub path: String,
     #[allow(dead_code)]
     pub message: String,
     #[allow(dead_code)]
@@ -62,8 +63,11 @@ fn value_to_string(val: &Value, state_map: &HashMap<String, String>) -> String {
         Value::F64(v) => format!("{:.0}", v),
         Value::I64(v) => v.to_string(),
         Value::U64(v) => v.to_string(),
-        Value::Str(s) => s.to_string(),
-        Value::Bool(b) => b.to_string(),
+        Value::Str(s) => state_map.get(s.as_str()).cloned().unwrap_or_else(|| s.to_string()),
+        Value::Bool(b) => {
+            let s = b.to_string();
+            state_map.get(&s).cloned().unwrap_or(s)
+        }
         Value::Value(inner) => value_to_string(inner, state_map),
         _ => format!("{:?}", val),
     }
@@ -110,6 +114,44 @@ async fn query_battery_state(conn: &Connection, path: &str) -> Option<(f64, Stri
         .unwrap_or_else(|| "unknown".to_string());
 
     Some((percentage, state))
+}
+
+/// Query BlueZ device alias (name)
+async fn query_bluez_alias(conn: &Connection, path: &str) -> Option<String> {
+    match conn.call_method(
+        Some("org.bluez"),
+        path,
+        Some("org.freedesktop.DBus.Properties"),
+        "Get",
+        &("org.bluez.Device1", "Alias"),
+    ).await {
+        Ok(reply) => {
+            match reply.body().deserialize::<Value>() {
+                Ok(v) => {
+                    let alias = match v {
+                        Value::Str(s) => Some(s.to_string()),
+                        Value::Value(inner) => match *inner {
+                            Value::Str(s) => Some(s.to_string()),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if alias.is_none() {
+                        eprintln!("Failed to extract alias from Value: {:?}", reply.body());
+                    }
+                    alias
+                }
+                Err(e) => {
+                    eprintln!("Failed to deserialize BlueZ Alias: {}", e);
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to call Get Alias: {}", e);
+            None
+        }
+    }
 }
 
 /// Run the DBus listener with configurable events
@@ -254,6 +296,8 @@ async fn run_bus_listener(
 
                 // For battery events, query full state instead of relying on changed_props only
                 let is_battery_event = path.contains("battery") || path.contains("BAT");
+                let is_bluetooth_event = event.match_rule.arg0.as_deref() == Some("org.bluez.Device1");
+
                 let (percentage, state) = if is_battery_event {
                     // Query full battery state from UPower
                     if let Some((pct, st)) = query_battery_state(&conn, &path).await {
@@ -294,6 +338,15 @@ async fn run_bus_listener(
                     values.insert("state".to_string(), st.clone());
                 }
 
+                // Inject Bluetooth device name
+                if is_bluetooth_event {
+                    if let Some(alias) = query_bluez_alias(&conn, &path).await {
+                        values.insert("name".to_string(), alias);
+                    } else {
+                        values.insert("name".to_string(), "Bluetooth Device".to_string());
+                    }
+                }
+
                 // Format message
                 let message = format_message(&event.format.message, &values);
 
@@ -304,6 +357,7 @@ async fn run_bus_listener(
 
                 let notify_event = NotifyEvent {
                     event_name: event.name.clone(),
+                    path: path.clone(),
                     message,
                     values,
                     percentage,

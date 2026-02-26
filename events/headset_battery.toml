@@ -1,0 +1,27 @@
+name = "Headset Battery"
+enabled = true
+bus = "system"
+
+[match]
+interface = "org.freedesktop.DBus.Properties"
+member = "PropertiesChanged"
+arg0 = "org.freedesktop.UPower.Device"
+path_prefix = "/org/freedesktop/UPower/devices/headset_dev_"
+
+[extract]
+percentage = "Percentage"
+state = "State"
+
+[state_map]
+# Headset batteries usually don't send UPower State property, so they might fall back to "unknown".
+# We can map specific states if they do. Creating a generic map anyway.
+"1" = "charging"
+"2" = "discharging"
+"4" = "full"
+
+[format]
+# Differentiate visually from laptop battery!
+message = "Headset: {percentage}%"
+
+[conditions]
+debounce_ms = 1000

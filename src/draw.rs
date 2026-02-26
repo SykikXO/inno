@@ -122,11 +122,19 @@ fn measure_icon(cr: &Context, icon: &str, size: f64) -> cairo::TextExtents {
 }
 
 /// Format notification text using config format string
-pub fn format_text(format: &str, icon: &str, message: &str, percent: f64) -> String {
-    format
+pub fn format_text(format: &str, icon: &str, message: &str, percent: Option<f64>) -> String {
+    let mut res = format
         .replace("{icon}", icon)
-        .replace("{message}", message)
-        .replace("{percent}", &format!("{:.0}", percent))
+        .replace("{message}", message);
+
+    if let Some(pct) = percent {
+        res = res.replace("{percent}", &format!("{:.0}", pct));
+    } else {
+        // If no percentage is known (e.g. bluetooth connect event),  remove {percent} and %
+        res = res.replace("{percent}%", "").replace("{percent}", "").trim().to_string();
+    }
+    
+    res
 }
 
 pub fn draw_with_signal(
