@@ -1,7 +1,7 @@
 # Inno Battery Notification Configuration
 
 [general]
-font = "InputMono Nerd Font"
+font = "JetBrainsMono Nerd Font"
 font_size = 18.0
 font_slant = "normal"    # normal, italic, oblique
 font_weight = "normal"   # normal, bold
@@ -80,11 +80,21 @@ animation = "bounce"
 duration = 5
 
 [[signal]]
-message = "always"
-icon = "󰂀"
-icon_size = 24
-color = "violet"
-threshold = 0
-state = "any"
-animation = "slide"
-duration = 5
+message = "{message}"
+icon = "󰂱"
+icon_size = 28
+color = "green"
+threshold = 100
+state = "connected"
+animation = "fade"
+duration = 3
+
+[[signal]]
+message = "{message}"
+icon = "󰂲"
+icon_size = 28
+color = "white"
+threshold = 100
+state = "disconnected"
+animation = "fade"
+duration = 3
