@@ -295,7 +295,7 @@ async fn run_bus_listener(
                 last_trigger.insert(event.name.clone(), now);
 
                 // For battery events, query full state instead of relying on changed_props only
-                let is_battery_event = path.contains("battery") || path.contains("BAT");
+                let is_battery_event = path.contains("battery") || path.contains("BAT") || path.contains("headset_dev");
                 let is_bluetooth_event = event.match_rule.arg0.as_deref() == Some("org.bluez.Device1");
 
                 let (percentage, state) = if is_battery_event {

@@ -65,9 +65,10 @@ impl MatchRule {
         if let Some(path) = &self.path {
             parts.push(format!("path='{}'", path));
         }
-        if let Some(prefix) = &self.path_prefix {
-            parts.push(format!("path_namespace='{}'", prefix));
-        }
+        // NOTE: Do NOT include path_prefix as path_namespace here.
+        // DBus path_namespace requires '/' separated hierarchy matching,
+        // so path_namespace='/devices/battery_BAT' won't match '/devices/battery_BAT0'.
+        // We handle prefix filtering ourselves in matches() using starts_with.
         if let Some(arg0) = &self.arg0 {
             parts.push(format!("arg0='{}'", arg0));
         }
