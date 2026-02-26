@@ -1,9 +1,45 @@
 post_install() {
-  _cleanup_legacy_service
+  _print_banner
+  echo "  Thank you for installing inno!"
+  echo "  Config: /etc/xdg/inno/inno.toml"
+  echo "  Events: /etc/xdg/inno/events/"
+  echo ""
+  echo "  Run 'inno' to start. Run 'inno --debug' for verbose output."
+  echo ""
 }
 
 post_upgrade() {
   _cleanup_legacy_service
+  _print_banner
+  echo ""
+  echo -e "  \033[1;31m╔══════════════════════════════════════════════════╗\033[0m"
+  echo -e "  \033[1;31m║          ⚠  CONFIGURATION UPDATED  ⚠            ║\033[0m"
+  echo -e "  \033[1;31m╚══════════════════════════════════════════════════╝\033[0m"
+  echo ""
+  echo -e "  \033[1;33mNew in v0.4.0:\033[0m"
+  echo -e "  \033[0;36m•\033[0m Bluetooth connect/disconnect notifications"
+  echo -e "  \033[0;36m•\033[0m Per-device battery tracking (laptop vs headset)"
+  echo -e "  \033[0;36m•\033[0m Dynamic device name display"
+  echo -e "  \033[0;36m•\033[0m JetBrainsMono Nerd Font as default"
+  echo ""
+  echo -e "  \033[1;33mNew config files:\033[0m"
+  echo -e "  \033[0;36m•\033[0m /etc/xdg/inno/events/bluetooth.toml"
+  echo -e "  \033[0;36m•\033[0m /etc/xdg/inno/events/laptop_battery.toml"
+  echo -e "  \033[0;36m•\033[0m /etc/xdg/inno/events/headset_battery.toml"
+  echo ""
+  echo -e "  \033[1;31mIf you have custom configs, check for .pacnew files:\033[0m"
+  echo -e "  \033[0;37m  find /etc/xdg/inno -name '*.pacnew'\033[0m"
+  echo ""
+}
+
+_print_banner() {
+  echo ""
+  echo -e "  \033[1;31m ___                    \033[0m"
+  echo -e "  \033[1;31m|_ _|_ __  _ __   ___   \033[0m"
+  echo -e "  \033[1;31m | || '_ \\| '_ \\ / _ \\  \033[0m"
+  echo -e "  \033[1;31m | || | | | | | | (_) | \033[0m"
+  echo -e "  \033[1;31m|___|_| |_|_| |_|\\___/  \033[0m"
+  echo -e "  \033[0;37m  event-driven notifications\033[0m"
 }
 
 _cleanup_legacy_service() {
