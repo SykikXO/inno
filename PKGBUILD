@@ -1,6 +1,6 @@
 # Maintainer: Sykik [xo.sykik@gmail.com]
 pkgname=inno
-pkgver=0.4.0
+pkgver=0.4.1
 pkgrel=1
 pkgdesc="A lightweight, event-driven Wayland notification agent (Rust)"
 arch=('x86_64')
