@@ -1,6 +1,7 @@
 use notify::{Event as NotifyEvent, RecursiveMode, Watcher};
 use rodio::Source;
 use smithay_client_toolkit::reexports::client::Connection;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
@@ -8,7 +9,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::io::unix::AsyncFd;
-use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 mod config;
@@ -59,13 +59,13 @@ fn play_sound(path: &PathBuf) {
     std::thread::spawn({
         let path = path.clone();
         move || {
-            if let Ok((_stream, stream_handle)) = rodio::OutputStream::try_default() {
-                if let Ok(file) = File::open(&path) {
-                    let reader = BufReader::new(file);
-                    if let Ok(source) = rodio::Decoder::new(reader) {
-                        let _ = stream_handle.play_raw(source.convert_samples());
-                        std::thread::sleep(Duration::from_secs(5));
-                    }
+            if let Ok((_stream, stream_handle)) = rodio::OutputStream::try_default()
+                && let Ok(file) = File::open(&path)
+            {
+                let reader = BufReader::new(file);
+                if let Ok(source) = rodio::Decoder::new(reader) {
+                    let _ = stream_handle.play_raw(source.convert_samples());
+                    std::thread::sleep(Duration::from_secs(5));
                 }
             }
         }
@@ -76,7 +76,7 @@ fn play_sound(path: &PathBuf) {
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let mut log_file: Option<PathBuf> = None;
-    let enable_dbus = true;
+    let mut enable_dbus = true;
     let mut debug_mode = false;
     let mut is_internal_daemon = false;
     let mut test_animations = false;
@@ -87,6 +87,9 @@ async fn main() -> anyhow::Result<()> {
         match arg.as_str() {
             "-d" | "--debug" => {
                 debug_mode = true;
+            }
+            "--no-dbus" => {
+                enable_dbus = false;
             }
             "--internal-daemon" => {
                 is_internal_daemon = true;
@@ -122,14 +125,13 @@ async fn main() -> anyhow::Result<()> {
             }
             "--test" => {
                 i += 1;
-                if i < args.len() {
-                    if let Ok(idx) = args[i].parse::<usize>() {
-                        if (1..=6).contains(&idx) {
-                            specific_test_anim = Some(idx - 1);
-                            test_animations = true;
-                            debug_mode = true;
-                        }
-                    }
+                if i < args.len()
+                    && let Ok(idx) = args[i].parse::<usize>()
+                    && (1..=6).contains(&idx)
+                {
+                    specific_test_anim = Some(idx - 1);
+                    test_animations = true;
+                    debug_mode = true;
                 }
             }
             _ => {}
@@ -159,26 +161,16 @@ async fn main() -> anyhow::Result<()> {
             });
         }
 
-        if let Some(ref path) = log_file {
-            if let Ok(file) = File::create(path) {
-                cmd.stderr(file);
-            }
+        if let Some(ref path) = log_file
+            && let Ok(file) = File::create(path)
+        {
+            cmd.stderr(file);
         }
 
         cmd.spawn().expect("Failed to spawn background daemon");
         std::process::exit(0);
     }
-    // Redirect stderr to log file if specified and not already handled by spawn redirection
-    if let Some(ref path) = log_file {
-        if !is_internal_daemon {
-            use std::os::unix::io::AsRawFd;
-            if let Ok(file) = File::create(path) {
-                unsafe {
-                    libc::dup2(file.as_raw_fd(), 2);
-                }
-            }
-        }
-    }
+    // Redirect stderr to log file is already handled by spawn redirection above.
 
     let mut config = AppConfig::load();
     eprintln!("inno: loaded {} signals", config.signals.len());
@@ -223,10 +215,10 @@ async fn main() -> anyhow::Result<()> {
         std::thread::spawn(move || {
             let (watcher_tx, watcher_rx) = std::sync::mpsc::channel();
             let mut watcher = notify::recommended_watcher(move |res: Result<NotifyEvent, _>| {
-                if let Ok(event) = res {
-                    if event.kind.is_modify() {
-                        let _ = watcher_tx.send(());
-                    }
+                if let Ok(event) = res
+                    && event.kind.is_modify()
+                {
+                    let _ = watcher_tx.send(());
                 }
             })
             .ok();
@@ -272,11 +264,11 @@ async fn main() -> anyhow::Result<()> {
     let mut draw_state = DrawState::default();
     let mut hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
     let mut animation_timer =
-        Box::pin(tokio::time::sleep(Duration::from_micros(1_000_000 / config.fps)));
+        Box::pin(tokio::time::sleep(Duration::from_micros(1_000_000 / config.fps.max(1))));
     let mut animating = false;
     // Cache current signal index to avoid re-searching every animation frame
     let mut current_signal_idx: Option<usize> = None;
-    let test_animations_list = vec![
+    let test_animations_list = [
         config::Animation::Blink,
         config::Animation::Pulse,
         config::Animation::Fade,
@@ -309,7 +301,10 @@ async fn main() -> anyhow::Result<()> {
                 config = AppConfig::load();
                 eprintln!("inno: reloaded {} signals", config.signals.len());
                 // Update animation interval if FPS changed
-                animation_timer = Box::pin(tokio::time::sleep(Duration::from_micros(1_000_000 / config.fps)));
+                animation_timer = Box::pin(tokio::time::sleep(Duration::from_micros(1_000_000 / config.fps.max(1))));
+                // Invalidate cached signal index — old index may be OOB in new config
+                current_signal_idx = None;
+                animating = false;
             }
 
             // DBus control events
@@ -345,10 +340,9 @@ async fn main() -> anyhow::Result<()> {
                         if let Some(pct) = notify_event.percentage {
                             battery_percentage.store((pct * 100.0) as u32, Ordering::Relaxed);
                         }
-                        if let Some(ref state) = notify_event.state {
-                            if let Ok(mut s) = battery_state_shared.write() {
-                                *s = state.clone();
-                            }
+                        if let Some(ref state) = notify_event.state
+                            && let Ok(mut s) = battery_state_shared.write() {
+                            *s = state.clone();
                         }
 
                         let pct_for_match = notify_event.percentage.unwrap_or(100.0);
@@ -485,27 +479,24 @@ async fn main() -> anyhow::Result<()> {
                     Ok(mut guard) => {
                         guard.clear_ready();
 
-                        match conn.prepare_read() {
-                            Some(read_guard) => {
-                                match read_guard.read() {
-                                    Ok(_) => {}
-                                    Err(e) => {
-                                        use wayland_client::backend::WaylandError;
-                                        let should_break = match &e {
-                                            WaylandError::Io(io_err) => {
-                                                io_err.kind() != std::io::ErrorKind::WouldBlock
-                                            }
-                                            _ => true,
-                                        };
-
-                                        if should_break {
-                                            eprintln!("Wayland Read Error: {}", e);
-                                            break;
+                        if let Some(read_guard) = conn.prepare_read() {
+                            match read_guard.read() {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    use wayland_client::backend::WaylandError;
+                                    let should_break = match &e {
+                                        WaylandError::Io(io_err) => {
+                                            io_err.kind() != std::io::ErrorKind::WouldBlock
                                         }
+                                        _ => true,
+                                    };
+
+                                    if should_break {
+                                        eprintln!("Wayland Read Error: {}", e);
+                                        break;
                                     }
                                 }
                             }
-                            None => {}
                         }
                     }
                     Err(_) => break,
