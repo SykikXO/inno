@@ -15,10 +15,7 @@ use zbus::zvariant::Value;
 pub struct NotifyEvent {
     pub event_name: String,
     pub path: String,
-    #[allow(dead_code)]
     pub message: String,
-    #[allow(dead_code)]
-    pub values: HashMap<String, String>,
     /// Percentage for signal matching (if applicable)
     pub percentage: Option<f64>,
     /// State string for signal matching (if applicable)
@@ -118,35 +115,36 @@ async fn query_battery_state(conn: &Connection, path: &str) -> Option<(f64, Stri
 
 /// Query BlueZ device alias (name)
 async fn query_bluez_alias(conn: &Connection, path: &str) -> Option<String> {
-    match conn.call_method(
-        Some("org.bluez"),
-        path,
-        Some("org.freedesktop.DBus.Properties"),
-        "Get",
-        &("org.bluez.Device1", "Alias"),
-    ).await {
-        Ok(reply) => {
-            match reply.body().deserialize::<Value>() {
-                Ok(v) => {
-                    let alias = match v {
+    match conn
+        .call_method(
+            Some("org.bluez"),
+            path,
+            Some("org.freedesktop.DBus.Properties"),
+            "Get",
+            &("org.bluez.Device1", "Alias"),
+        )
+        .await
+    {
+        Ok(reply) => match reply.body().deserialize::<Value>() {
+            Ok(v) => {
+                let alias = match v {
+                    Value::Str(s) => Some(s.to_string()),
+                    Value::Value(inner) => match *inner {
                         Value::Str(s) => Some(s.to_string()),
-                        Value::Value(inner) => match *inner {
-                            Value::Str(s) => Some(s.to_string()),
-                            _ => None,
-                        },
                         _ => None,
-                    };
-                    if alias.is_none() {
-                        eprintln!("Failed to extract alias from Value: {:?}", reply.body());
-                    }
-                    alias
+                    },
+                    _ => None,
+                };
+                if alias.is_none() {
+                    eprintln!("Failed to extract alias from Value: {:?}", reply.body());
                 }
-                Err(e) => {
-                    eprintln!("Failed to deserialize BlueZ Alias: {}", e);
-                    None
-                }
+                alias
             }
-        }
+            Err(e) => {
+                eprintln!("Failed to deserialize BlueZ Alias: {}", e);
+                None
+            }
+        },
         Err(e) => {
             eprintln!("Failed to call Get Alias: {}", e);
             None
@@ -251,122 +249,116 @@ async fn run_bus_listener(
                 continue;
             }
 
+            // Parse message body once (PropertiesChanged format)
+            let body = msg.body();
+            let Ok((arg0, changed_props, _)) =
+                body.deserialize::<(String, HashMap<String, Value>, Vec<String>)>()
+            else {
+                continue;
+            };
+
             // Check arg0 if specified
-            if let Some(ref expected_arg0) = event.match_rule.arg0 {
-                if let Ok((arg0, _, _)) =
-                    msg.body().deserialize::<(String, HashMap<String, Value>, Vec<String>)>()
-                {
-                    if &arg0 != expected_arg0 {
-                        continue;
-                    }
+            if let Some(ref expected_arg0) = event.match_rule.arg0
+                && &arg0 != expected_arg0
+            {
+                continue;
+            }
+
+            // Check conditions
+            let should_trigger = if event.conditions.trigger_on.is_empty() {
+                true
+            } else if event.conditions.require_all {
+                event.conditions.trigger_on.iter().all(|k| changed_props.contains_key(k))
+            } else {
+                event.conditions.trigger_on.iter().any(|k| changed_props.contains_key(k))
+            };
+
+            if !should_trigger {
+                continue;
+            }
+
+            // Check debounce
+            let now = Instant::now();
+            if event.conditions.debounce_ms > 0
+                && let Some(last) = last_trigger.get(&event.name)
+                && now.duration_since(*last).as_millis() < event.conditions.debounce_ms as u128
+            {
+                continue;
+            }
+            last_trigger.insert(event.name.clone(), now);
+
+            // For battery events, query full state instead of relying on changed_props only
+            let is_battery_event =
+                path.contains("battery") || path.contains("BAT") || path.contains("headset_dev");
+            let is_bluetooth_event = event.match_rule.arg0.as_deref() == Some("org.bluez.Device1");
+
+            let (percentage, state) = if is_battery_event {
+                // Query full battery state from UPower
+                if let Some((pct, st)) = query_battery_state(&conn, &path).await {
+                    eprintln!("Battery state query: {:.0}% {}", pct, st);
+                    (Some(pct), Some(st))
                 } else {
-                    continue;
+                    // Fall back to extracting from changed properties
+                    let pct = changed_props.get("Percentage").and_then(|v| extract_f64(v));
+                    let st = changed_props
+                        .get("State")
+                        .and_then(|v| extract_u32(v))
+                        .map(upower_state_to_string);
+                    (pct, st)
+                }
+            } else {
+                // Non-battery events: extract from changed properties
+                let mut pct = None;
+                let mut st = None;
+                for (field_name, prop_path) in &event.extract {
+                    if let Some(value) = changed_props.get(prop_path) {
+                        if field_name == "percentage" {
+                            pct = extract_f64(value);
+                        }
+                        if field_name == "state" {
+                            st = Some(value_to_string(value, &event.state_map));
+                        }
+                    }
+                }
+                (pct, st)
+            };
+
+            // Build values map
+            let mut values: HashMap<String, String> = HashMap::new();
+            if let Some(pct) = percentage {
+                values.insert("percentage".to_string(), format!("{:.0}", pct));
+            }
+            if let Some(ref st) = state {
+                values.insert("state".to_string(), st.clone());
+            }
+
+            // Inject Bluetooth device name
+            if is_bluetooth_event {
+                if let Some(alias) = query_bluez_alias(&conn, &path).await {
+                    values.insert("name".to_string(), alias);
+                } else {
+                    values.insert("name".to_string(), "Bluetooth Device".to_string());
                 }
             }
 
-            // Parse message body (PropertiesChanged format)
-            if let Ok((_, changed_props, _)) =
-                msg.body().deserialize::<(String, HashMap<String, Value>, Vec<String>)>()
-            {
-                // Check conditions
-                let should_trigger = if event.conditions.trigger_on.is_empty() {
-                    true
-                } else if event.conditions.require_all {
-                    event.conditions.trigger_on.iter().all(|k| changed_props.contains_key(k))
-                } else {
-                    event.conditions.trigger_on.iter().any(|k| changed_props.contains_key(k))
-                };
+            // Format message
+            let message = format_message(&event.format.message, &values);
 
-                if !should_trigger {
-                    continue;
-                }
+            eprintln!(
+                "Event '{}' triggered: {} (pct={:?}, state={:?})",
+                event.name, message, percentage, state
+            );
 
-                // Check debounce
-                let now = Instant::now();
-                if event.conditions.debounce_ms > 0 {
-                    if let Some(last) = last_trigger.get(&event.name) {
-                        if now.duration_since(*last).as_millis()
-                            < event.conditions.debounce_ms as u128
-                        {
-                            continue;
-                        }
-                    }
-                }
-                last_trigger.insert(event.name.clone(), now);
+            let notify_event = NotifyEvent {
+                event_name: event.name.clone(),
+                path: path.clone(),
+                message,
+                percentage,
+                state,
+            };
 
-                // For battery events, query full state instead of relying on changed_props only
-                let is_battery_event = path.contains("battery") || path.contains("BAT") || path.contains("headset_dev");
-                let is_bluetooth_event = event.match_rule.arg0.as_deref() == Some("org.bluez.Device1");
-
-                let (percentage, state) = if is_battery_event {
-                    // Query full battery state from UPower
-                    if let Some((pct, st)) = query_battery_state(&conn, &path).await {
-                        eprintln!("Battery state query: {:.0}% {}", pct, st);
-                        (Some(pct), Some(st))
-                    } else {
-                        // Fall back to extracting from changed properties
-                        let pct = changed_props.get("Percentage").and_then(|v| extract_f64(v));
-                        let st = changed_props
-                            .get("State")
-                            .and_then(|v| extract_u32(v))
-                            .map(upower_state_to_string);
-                        (pct, st)
-                    }
-                } else {
-                    // Non-battery events: extract from changed properties
-                    let mut pct = None;
-                    let mut st = None;
-                    for (field_name, prop_path) in &event.extract {
-                        if let Some(value) = changed_props.get(prop_path) {
-                            if field_name == "percentage" {
-                                pct = extract_f64(value);
-                            }
-                            if field_name == "state" {
-                                st = Some(value_to_string(value, &event.state_map));
-                            }
-                        }
-                    }
-                    (pct, st)
-                };
-
-                // Build values map
-                let mut values: HashMap<String, String> = HashMap::new();
-                if let Some(pct) = percentage {
-                    values.insert("percentage".to_string(), format!("{:.0}", pct));
-                }
-                if let Some(ref st) = state {
-                    values.insert("state".to_string(), st.clone());
-                }
-
-                // Inject Bluetooth device name
-                if is_bluetooth_event {
-                    if let Some(alias) = query_bluez_alias(&conn, &path).await {
-                        values.insert("name".to_string(), alias);
-                    } else {
-                        values.insert("name".to_string(), "Bluetooth Device".to_string());
-                    }
-                }
-
-                // Format message
-                let message = format_message(&event.format.message, &values);
-
-                eprintln!(
-                    "Event '{}' triggered: {} (pct={:?}, state={:?})",
-                    event.name, message, percentage, state
-                );
-
-                let notify_event = NotifyEvent {
-                    event_name: event.name.clone(),
-                    path: path.clone(),
-                    message,
-                    values,
-                    percentage,
-                    state,
-                };
-
-                if tx.send(Event::Notify(notify_event)).await.is_err() {
-                    return Ok(());
-                }
+            if tx.send(Event::Notify(notify_event)).await.is_err() {
+                return Ok(());
             }
         }
     }
