@@ -1,85 +1,32 @@
-use notify::{Event as NotifyEvent, RecursiveMode, Watcher};
+use notify::{Event as FsEvent, RecursiveMode, Watcher};
 use smithay_client_toolkit::reexports::client::Connection;
-use std::collections::{HashMap, VecDeque};
 use std::fs::File;
-use std::io::BufReader;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc;
 
 mod args;
+mod battery;
 mod config;
 mod control;
 mod dbus;
 mod draw;
 mod events;
 mod layer;
+mod sound;
+mod state;
 
 use args::{Action, Args};
 use config::{AppConfig, HIDE_TIMEOUT_SECS};
 use control::ControlEvent;
 use dbus::Event;
-use draw::{DrawState, format_text};
 use layer::LayerApp;
+use sound::SoundWorker;
+use state::NotificationState;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Channel-backed sound worker — single thread, single OutputStream
-struct SoundWorker {
-    tx: Option<std::sync::mpsc::Sender<PathBuf>>,
-    _handle: Option<std::thread::JoinHandle<()>>,
-}
-
-impl SoundWorker {
-    fn new() -> Self {
-        let (tx, rx) = std::sync::mpsc::channel::<PathBuf>();
-
-        let handle = std::thread::spawn(move || {
-            // Create OutputStream once
-            let Ok((stream, stream_handle)) = rodio::OutputStream::try_default() else {
-                eprintln!("Sound: failed to create OutputStream");
-                return;
-            };
-            let sink = match rodio::Sink::try_new(&stream_handle) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("Sound: failed to create Sink: {}", e);
-                    return;
-                }
-            };
-            // Keep stream alive for the lifetime of this thread
-            let _stream = stream;
-
-            while let Ok(path) = rx.recv() {
-                if !path.exists() {
-                    eprintln!("Sound file not found: {:?}", path);
-                    continue;
-                }
-                if let Ok(file) = File::open(&path) {
-                    let reader = BufReader::new(file);
-                    if let Ok(source) = rodio::Decoder::new(reader) {
-                        sink.append(source);
-                        sink.sleep_until_end();
-                    }
-                }
-            }
-        });
-
-        Self {
-            tx: Some(tx),
-            _handle: Some(handle),
-        }
-    }
-
-    fn play(&self, path: &std::path::Path) {
-        if let Some(ref tx) = self.tx {
-            let _ = tx.send(path.to_path_buf());
-        }
-    }
-}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
@@ -96,7 +43,6 @@ async fn main() -> anyhow::Result<()> {
             return Ok(());
         }
         Action::Daemon => {
-            // Parent process: respawn as internal daemon
             println!("inno is running as a daemon. To stop it, use 'pkill inno'.");
             use std::os::unix::process::CommandExt;
 
@@ -125,6 +71,36 @@ async fn main() -> anyhow::Result<()> {
             cmd.spawn().expect("Failed to spawn background daemon");
             std::process::exit(0);
         }
+        Action::CheckConfig => {
+            let cfg = AppConfig::load();
+            let event_cfgs = events::load_events();
+            let (errors, warnings) = cfg.validate();
+            if let Some(ref path) = cfg.config_path {
+                println!("Config file: {:?}", path);
+            }
+            println!("Signals: {}", cfg.signals.len());
+            println!("Events: {}", event_cfgs.len());
+
+            if !warnings.is_empty() {
+                println!("\nWarnings:");
+                for w in &warnings {
+                    println!("  WARNING: {}", w);
+                }
+            }
+
+            if !errors.is_empty() {
+                println!("\nErrors:");
+                for e in &errors {
+                    println!("  ERROR: {}", e);
+                }
+                std::process::exit(1);
+            }
+
+            if warnings.is_empty() && errors.is_empty() {
+                println!("Config is valid.");
+            }
+            return Ok(());
+        }
         Action::InternalDaemon => {}
     }
 
@@ -135,23 +111,18 @@ async fn main() -> anyhow::Result<()> {
     let mut config = AppConfig::load();
     eprintln!("inno: loaded {} signals", config.signals.len());
 
-    // Load event configurations
     let event_configs = events::load_events();
     eprintln!("inno: loaded {} event configs", event_configs.len());
 
-    // Channels
     let (tx, mut rx) = mpsc::channel(10);
     let (config_tx, mut config_rx) = mpsc::channel::<()>(1);
     let (control_tx, mut control_rx) = mpsc::channel::<ControlEvent>(10);
 
-    // Sound worker — single thread, single OutputStream
     let sound_worker = SoundWorker::new();
 
-    // Shared battery state for DBus interface
-    let battery_percentage = Arc::new(AtomicU32::new(10000)); // 100.00%
+    let battery_percentage = Arc::new(AtomicU32::new(10000));
     let battery_state_shared = Arc::new(RwLock::new("unknown".to_string()));
 
-    // Start DBus control interface
     let _dbus_conn = if enable_dbus {
         match control::start_control_service(
             control_tx.clone(),
@@ -170,14 +141,13 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    // Watch config file for changes
     if let Some(ref config_path) = config.config_path {
         let config_path = config_path.clone();
         let config_tx = config_tx.clone();
 
         std::thread::spawn(move || {
             let (watcher_tx, watcher_rx) = std::sync::mpsc::channel();
-            let mut watcher = notify::recommended_watcher(move |res: Result<NotifyEvent, _>| {
+            let mut watcher = notify::recommended_watcher(move |res: Result<FsEvent, _>| {
                 if let Ok(event) = res
                     && event.kind.is_modify()
                 {
@@ -196,7 +166,6 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Start DBus event listener with configurable events
     if !test_all_animations {
         tokio::spawn(async move {
             if let Err(e) = dbus::run_dbus_listener(tx, event_configs).await {
@@ -221,18 +190,11 @@ async fn main() -> anyhow::Result<()> {
     let fd = backend.poll_fd();
     let async_fd = AsyncFd::new(fd)?;
 
-    let mut current_text: Option<String> = None;
-    let mut prev_state: HashMap<String, Option<String>> = HashMap::new();
-    let mut prev_signal_msg: HashMap<String, Option<String>> = HashMap::new();
-    let mut state_key_order: VecDeque<String> = VecDeque::new();
-    const MAX_STATE_ENTRIES: usize = 32;
-    let mut draw_state = DrawState::default();
+    let mut state = NotificationState::new();
     let mut hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
     let mut animation_timer =
         Box::pin(tokio::time::sleep(Duration::from_micros(1_000_000 / config.fps.max(1))));
-    let mut animating = false;
-    // Cache current signal index to avoid re-searching every animation frame
-    let mut current_signal_idx: Option<usize> = None;
+
     let test_animations_list = [
         config::Animation::Blink,
         config::Animation::Pulse,
@@ -247,7 +209,7 @@ async fn main() -> anyhow::Result<()> {
 
     if test_all_animations {
         eprintln!("Animation testing mode enabled.");
-        animating = true;
+        state.animating = true;
     }
 
     loop {
@@ -257,43 +219,56 @@ async fn main() -> anyhow::Result<()> {
             break;
         }
 
+        if app.scale_changed {
+            app.scale_changed = false;
+            app.update_scale_margins(&config);
+            if let Some(ref text) = state.current_text {
+                state.draw_state.reset();
+                if let Some(idx) = state.current_signal_idx {
+                    let signal = &config.signals[idx];
+                    app.draw_text_with_signal(text, &config, Some(signal), &state.draw_state);
+                    state.animating = signal.animation != config::Animation::None;
+                } else {
+                    app.draw_text(text, &config);
+                    state.animating = false;
+                }
+            }
+        }
+
+        if app.clicked {
+            app.clicked = false;
+            state.dismiss_by_click(&mut app);
+            hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
+        }
+
         let _ = conn.flush();
 
         tokio::select! {
-            // Config reload (from file watcher)
             Some(()) = config_rx.recv() => {
                 eprintln!("Config file changed, reloading...");
                 config = AppConfig::load();
                 eprintln!("inno: reloaded {} signals", config.signals.len());
-                // Update animation interval if FPS changed
                 animation_timer = Box::pin(tokio::time::sleep(Duration::from_micros(1_000_000 / config.fps.max(1))));
-                // Invalidate cached signal index — old index may be OOB in new config
-                current_signal_idx = None;
-                animating = false;
+                state.on_config_reload(&config);
             }
 
-            // DBus control events
             Some(control_event) = control_rx.recv() => {
                 match control_event {
                     ControlEvent::Show { message, duration } => {
                         eprintln!("DBus: Show '{}' for {}s", message, duration);
-                        draw_state.reset();
-                        app.draw_text(&message, &config);
+                        state.on_show_control(&mut app, &config, &message, duration);
                         hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(duration)));
-                        current_text = Some(message);
-                        animating = false;
                     }
                     ControlEvent::Hide => {
                         eprintln!("DBus: Hide");
-                        app.hide();
-                        current_text = None;
-                        animating = false;
+                        state.on_hide_control(&mut app);
                         hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
                     }
                     ControlEvent::Reload => {
                         eprintln!("DBus: Reload config");
                         config = AppConfig::load();
                         eprintln!("inno: reloaded {} signals", config.signals.len());
+                        state.on_config_reload(&config);
                     }
                 }
             }
@@ -301,83 +276,14 @@ async fn main() -> anyhow::Result<()> {
             Some(event) = rx.recv() => {
                 match event {
                     Event::Notify(notify_event) => {
-                        // Update shared state for DBus control interface
-                        if let Some(pct) = notify_event.percentage {
-                            battery_percentage.store((pct * 100.0) as u32, Ordering::Relaxed);
-                        }
-                        if let Some(ref state) = notify_event.state
-                            && let Ok(mut s) = battery_state_shared.write() {
-                            *s = state.clone();
-                        }
-
-                        let pct_for_match = notify_event.percentage.unwrap_or(100.0);
-                        let state = notify_event.state.clone().unwrap_or_else(|| "unknown".to_string());
-
-                        // Find matching signal and cache its index for animation frames
-                        let sig_idx = config.find_signal_idx(pct_for_match, &state);
-                        let signal = sig_idx.map(|i| &config.signals[i]);
-                        let signal_msg = signal.map(|s| s.message.clone());
-
-                        let state_key = format!("{}:{}", notify_event.event_name, notify_event.path);
-                        let prev_s = prev_state.get(&state_key).unwrap_or(&None);
-                        let state_changed = prev_s.as_ref() != Some(&state);
-
-                        let prev_sig = prev_signal_msg.get(&state_key).unwrap_or(&None);
-                        let signal_changed = prev_sig != &signal_msg;
-
-                        if state_changed || signal_changed {
-                            if let Some(p) = notify_event.percentage {
-                                println!("Notify: {:.0}% {} ({}) (state={}, signal={})",
-                                    p, notify_event.event_name, notify_event.path, state_changed, signal_changed);
-                            } else {
-                                println!("Notify: {} ({}) (state={}, signal={})",
-                                    notify_event.event_name, notify_event.path, state_changed, signal_changed);
-                            }
-
-                            if let Some(sig) = signal {
-                                let dynamic_msg = sig.message.replace("{message}", &notify_event.message);
-
-                                let text = format_text(
-                                    &config.format,
-                                    &sig.icon,
-                                    &dynamic_msg,
-                                    notify_event.percentage,
-                                );
-
-                                if let Some(ref sound_path) = sig.sound {
-                                    sound_worker.play(sound_path);
-                                }
-
-                                draw_state.reset();
-                                app.draw_text_with_signal(&text, &config, Some(sig), &draw_state);
-                                animating = sig.animation != config::Animation::None;
-                                current_signal_idx = sig_idx;
-                                // Add 100ms buffer so fade-out animation completes before hiding
-                                let hide_delay = if sig.animation != config::Animation::None {
-                                    Duration::from_millis(sig.duration * 1000 + 100)
-                                } else {
-                                    Duration::from_secs(sig.duration)
-                                };
-                                hide_timer = Box::pin(tokio::time::sleep(hide_delay));
-                                current_text = Some(text);
-                            }
-                        }
-
-                        // Insert with bounded growth — evict oldest if at cap
-                        if prev_state.contains_key(&state_key) {
-                            prev_state.insert(state_key.clone(), Some(state));
-                            prev_signal_msg.insert(state_key, signal_msg);
-                        } else {
-                            if state_key_order.len() >= MAX_STATE_ENTRIES
-                                && let Some(oldest) = state_key_order.pop_front()
-                            {
-                                prev_state.remove(&oldest);
-                                prev_signal_msg.remove(&oldest);
-                            }
-                            state_key_order.push_back(state_key.clone());
-                            prev_state.insert(state_key.clone(), Some(state));
-                            prev_signal_msg.insert(state_key, signal_msg);
-                        }
+                        state.process_notify(
+                            &mut app,
+                            &config,
+                            &sound_worker,
+                            &notify_event,
+                            &battery_percentage,
+                            &battery_state_shared,
+                        );
                     }
                 }
             }
@@ -399,16 +305,16 @@ async fn main() -> anyhow::Result<()> {
                     sound: None,
                 };
 
-                let text = format_text(
+                let text = draw::format_text(
                     &config.format,
                     &test_signal.icon,
                     &test_signal.message,
                     Some(50.0),
                 );
 
-                current_text = Some(text.clone());
-                draw_state.reset();
-                app.draw_text_with_signal(&text, &config, Some(&test_signal), &draw_state);
+                state.current_text = Some(text.clone());
+                state.draw_state.reset();
+                app.draw_text_with_signal(&text, &config, Some(&test_signal), &state.draw_state);
                 current_test_signal = Some(test_signal);
                 hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(10)));
 
@@ -419,35 +325,32 @@ async fn main() -> anyhow::Result<()> {
                     test_anim_idx = (test_anim_idx + 1) % test_animations_list.len();
                     test_timer = Box::pin(tokio::time::sleep(Duration::from_secs(12)));
                 }
-                animating = true;
+                state.animating = true;
             }
 
-            _ = &mut animation_timer, if animating => {
-                if let Some(text) = &current_text {
+            _ = &mut animation_timer, if state.animating => {
+                if let Some(text) = &state.current_text {
                     if test_all_animations {
                         if let Some(ref sig) = current_test_signal {
                             let total_frames = sig.duration as f64 * config.fps as f64;
-                            draw_state.tick(&sig.animation, total_frames, config.fps as f64);
-                            app.draw_text_with_signal(text, &config, Some(sig), &draw_state);
+                            state.draw_state.tick(&sig.animation, total_frames, config.fps as f64);
+                            app.draw_text_with_signal(text, &config, Some(sig), &state.draw_state);
                         }
-                    } else if let Some(idx) = current_signal_idx {
+                    } else if let Some(idx) = state.current_signal_idx {
                         let signal = &config.signals[idx];
                         let total_frames = signal.duration as f64 * config.fps as f64;
-                        draw_state.tick(&signal.animation, total_frames, config.fps as f64);
-                        app.draw_text_with_signal(text, &config, Some(signal), &draw_state);
+                        state.draw_state.tick(&signal.animation, total_frames, config.fps as f64);
+                        app.draw_text_with_signal(text, &config, Some(signal), &state.draw_state);
                     }
                 }
                 animation_timer = Box::pin(tokio::time::sleep(Duration::from_micros(1_000_000 / config.fps)));
             }
 
             _ = &mut hide_timer => {
-                if current_text.is_some() {
+                if state.current_text.is_some() {
                     println!("Auto-hiding");
-                    app.hide();
-                    current_text = None;
-                    animating = false;
-                    draw_state.reset();
-                    hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
+                    let delay = state.hide_and_next(&mut app, &config, &sound_worker);
+                    hide_timer = Box::pin(tokio::time::sleep(delay));
 
                     if test_animation.is_some() {
                         println!("Specific test completed, exiting.");
