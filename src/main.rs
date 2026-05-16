@@ -1,7 +1,6 @@
 use notify::{Event as NotifyEvent, RecursiveMode, Watcher};
-use rodio::Source;
 use smithay_client_toolkit::reexports::client::Connection;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
@@ -28,27 +27,58 @@ use layer::LayerApp;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Play sound file if exists
-fn play_sound(path: &PathBuf) {
-    if !path.exists() {
-        eprintln!("Sound file not found: {:?}", path);
-        return;
-    }
+/// Channel-backed sound worker — single thread, single OutputStream
+struct SoundWorker {
+    tx: Option<std::sync::mpsc::Sender<PathBuf>>,
+    _handle: Option<std::thread::JoinHandle<()>>,
+}
 
-    std::thread::spawn({
-        let path = path.clone();
-        move || {
-            if let Ok((_stream, stream_handle)) = rodio::OutputStream::try_default()
-                && let Ok(file) = File::open(&path)
-            {
-                let reader = BufReader::new(file);
-                if let Ok(source) = rodio::Decoder::new(reader) {
-                    let _ = stream_handle.play_raw(source.convert_samples());
-                    std::thread::sleep(Duration::from_secs(5));
+impl SoundWorker {
+    fn new() -> Self {
+        let (tx, rx) = std::sync::mpsc::channel::<PathBuf>();
+
+        let handle = std::thread::spawn(move || {
+            // Create OutputStream once
+            let Ok((stream, stream_handle)) = rodio::OutputStream::try_default() else {
+                eprintln!("Sound: failed to create OutputStream");
+                return;
+            };
+            let sink = match rodio::Sink::try_new(&stream_handle) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Sound: failed to create Sink: {}", e);
+                    return;
+                }
+            };
+            // Keep stream alive for the lifetime of this thread
+            let _stream = stream;
+
+            while let Ok(path) = rx.recv() {
+                if !path.exists() {
+                    eprintln!("Sound file not found: {:?}", path);
+                    continue;
+                }
+                if let Ok(file) = File::open(&path) {
+                    let reader = BufReader::new(file);
+                    if let Ok(source) = rodio::Decoder::new(reader) {
+                        sink.append(source);
+                        sink.sleep_until_end();
+                    }
                 }
             }
+        });
+
+        Self {
+            tx: Some(tx),
+            _handle: Some(handle),
         }
-    });
+    }
+
+    fn play(&self, path: &std::path::Path) {
+        if let Some(ref tx) = self.tx {
+            let _ = tx.send(path.to_path_buf());
+        }
+    }
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -113,6 +143,9 @@ async fn main() -> anyhow::Result<()> {
     let (tx, mut rx) = mpsc::channel(10);
     let (config_tx, mut config_rx) = mpsc::channel::<()>(1);
     let (control_tx, mut control_rx) = mpsc::channel::<ControlEvent>(10);
+
+    // Sound worker — single thread, single OutputStream
+    let sound_worker = SoundWorker::new();
 
     // Shared battery state for DBus interface
     let battery_percentage = Arc::new(AtomicU32::new(10000)); // 100.00%
@@ -191,6 +224,8 @@ async fn main() -> anyhow::Result<()> {
     let mut current_text: Option<String> = None;
     let mut prev_state: HashMap<String, Option<String>> = HashMap::new();
     let mut prev_signal_msg: HashMap<String, Option<String>> = HashMap::new();
+    let mut state_key_order: VecDeque<String> = VecDeque::new();
+    const MAX_STATE_ENTRIES: usize = 32;
     let mut draw_state = DrawState::default();
     let mut hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
     let mut animation_timer =
@@ -310,7 +345,7 @@ async fn main() -> anyhow::Result<()> {
                                 );
 
                                 if let Some(ref sound_path) = sig.sound {
-                                    play_sound(sound_path);
+                                    sound_worker.play(sound_path);
                                 }
 
                                 draw_state.reset();
@@ -328,8 +363,21 @@ async fn main() -> anyhow::Result<()> {
                             }
                         }
 
-                        prev_state.insert(state_key.clone(), Some(state));
-                        prev_signal_msg.insert(state_key, signal_msg);
+                        // Insert with bounded growth — evict oldest if at cap
+                        if prev_state.contains_key(&state_key) {
+                            prev_state.insert(state_key.clone(), Some(state));
+                            prev_signal_msg.insert(state_key, signal_msg);
+                        } else {
+                            if state_key_order.len() >= MAX_STATE_ENTRIES
+                                && let Some(oldest) = state_key_order.pop_front()
+                            {
+                                prev_state.remove(&oldest);
+                                prev_signal_msg.remove(&oldest);
+                            }
+                            state_key_order.push_back(state_key.clone());
+                            prev_state.insert(state_key.clone(), Some(state));
+                            prev_signal_msg.insert(state_key, signal_msg);
+                        }
                     }
                 }
             }
