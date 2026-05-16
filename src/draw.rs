@@ -27,7 +27,7 @@ impl DrawState {
 
         match anim {
             Animation::Blink => {
-                self.visible = (self.frame / 15) % 2 == 0;
+                self.visible = (self.frame / 15).is_multiple_of(2);
                 self.alpha = 1.0;
                 self.offset_x = 0.0;
                 self.offset_y = 0.0;
@@ -44,14 +44,14 @@ impl DrawState {
                 self.offset_y = 0.0;
                 // Consistent 0.5s fade, but finish slightly earlier than total_frames
                 // to avoid being cut off by the hide_timer race.
-                let fade_duration = (fps * 0.5).min(total_frames / 3.0);
+                let fade_duration = (fps * 0.5).min(total_frames / 3.0).max(1.0);
                 let fade_end = total_frames - 1.0; // Finish 1 frame early
                 let fade_out_start = total_frames - fade_duration - 1.0;
 
                 if t < fade_duration {
                     self.alpha = (t / fade_duration).min(1.0); // Fade in
                 } else if t > fade_out_start {
-                    self.alpha = ((fade_end - t) / fade_duration).max(0.0).min(1.0); // Fade out
+                    self.alpha = ((fade_end - t) / fade_duration).clamp(0.0, 1.0); // Fade out
                 } else {
                     self.alpha = 1.0; // Fully visible
                 }
@@ -122,18 +122,13 @@ fn measure_icon(cr: &Context, icon: &str, size: f64) -> cairo::TextExtents {
 }
 
 /// Format notification text using config format string
-pub fn format_text(format: &str, icon: &str, message: &str, percent: Option<f64>) -> String {
-    let mut res = format
-        .replace("{icon}", icon)
-        .replace("{message}", message);
-
+pub fn format_text(fmt: &str, icon: &str, message: &str, percent: Option<f64>) -> String {
+    let mut res = fmt.replace("{icon}", icon).replace("{message}", message);
     if let Some(pct) = percent {
         res = res.replace("{percent}", &format!("{:.0}", pct));
     } else {
-        // If no percentage is known (e.g. bluetooth connect event),  remove {percent} and %
         res = res.replace("{percent}%", "").replace("{percent}", "").trim().to_string();
     }
-    
     res
 }
 
@@ -161,11 +156,11 @@ pub fn draw_with_signal(
     cr.select_font_face(&config.font, config.font_slant, config.font_weight);
 
     let mut icon_w = 0.0;
-    if let Some(s) = signal {
-        if !s.icon.is_empty() {
-            let icon_ext = measure_icon(cr, &s.icon, s.icon_size);
-            icon_w = icon_ext.x_advance() + 10.0;
-        }
+    if let Some(s) = signal
+        && !s.icon.is_empty()
+    {
+        let icon_ext = measure_icon(cr, &s.icon, s.icon_size);
+        icon_w = icon_ext.x_advance() + 10.0;
     }
 
     // Measure main text
@@ -173,7 +168,7 @@ pub fn draw_with_signal(
     let ext = cr.text_extents(text).unwrap();
 
     let w = ext.width().ceil() as i32 + 20 + icon_w as i32;
-    let h_content = ext.height().ceil() as f64 + 20.0;
+    let h_content = ext.height().ceil() + 20.0;
     let h = (h_content + V_PADDING_TOP + V_PADDING_BOTTOM) as i32;
 
     // Clear canvas
