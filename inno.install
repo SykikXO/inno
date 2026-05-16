@@ -6,10 +6,11 @@ post_install() {
   echo "    cp /etc/xdg/inno/inno.toml ~/.config/inno/"
   echo "    cp -r /etc/xdg/inno/events/ ~/.config/inno/"
   echo ""
-  echo "==> Add to your compositor autostart:"
+  echo "==> Start with compositor autostart or systemd:"
   echo "    Hyprland:  exec-once = inno --internal-daemon"
   echo "    Sway:      exec inno --internal-daemon"
   echo "    River:     riverctl spawn inno --internal-daemon"
+  echo "    systemd:   systemctl --user enable --now inno.service"
 }
 
 post_upgrade() {

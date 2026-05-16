@@ -23,4 +23,5 @@ package() {
   for f in events/*.toml; do
     install -Dm644 "$f" "${pkgdir}/etc/xdg/inno/${f}"
   done
+  install -Dm644 inno.service "${pkgdir}/usr/lib/systemd/user/inno.service"
 }
