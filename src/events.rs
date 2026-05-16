@@ -223,3 +223,105 @@ pub fn format_message(template: &str, values: &HashMap<String, String>) -> Strin
     }
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_match_rule_exact() {
+        let rule = MatchRule {
+            interface: Some("org.freedesktop.DBus.Properties".into()),
+            member: Some("PropertiesChanged".into()),
+            path: Some("/org/freedesktop/UPower/devices/battery_BAT0".into()),
+            path_prefix: None,
+            arg0: None,
+            sender: None,
+        };
+
+        assert!(rule.matches("org.freedesktop.DBus.Properties", "PropertiesChanged",
+            "/org/freedesktop/UPower/devices/battery_BAT0"));
+        assert!(!rule.matches("org.freedesktop.DBus.Properties", "PropertiesChanged",
+            "/org/freedesktop/UPower/devices/battery_BAT1"));
+        assert!(!rule.matches("other.Interface", "PropertiesChanged",
+            "/org/freedesktop/UPower/devices/battery_BAT0"));
+    }
+
+    #[test]
+    fn test_match_rule_prefix() {
+        let rule = MatchRule {
+            interface: Some("org.freedesktop.DBus.Properties".into()),
+            member: None,
+            path: None,
+            path_prefix: Some("/org/freedesktop/UPower/devices".into()),
+            arg0: None,
+            sender: None,
+        };
+
+        assert!(rule.matches("org.freedesktop.DBus.Properties", "PropertiesChanged",
+            "/org/freedesktop/UPower/devices/battery_BAT0"));
+        assert!(rule.matches("org.freedesktop.DBus.Properties", "PropertiesChanged",
+            "/org/freedesktop/UPower/devices/battery_BAT1"));
+        assert!(!rule.matches("org.freedesktop.DBus.Properties", "PropertiesChanged",
+            "/some/other/path"));
+    }
+
+    #[test]
+    fn test_match_rule_minimal() {
+        let rule = MatchRule {
+            interface: None,
+            member: None,
+            path: None,
+            path_prefix: None,
+            arg0: None,
+            sender: None,
+        };
+
+        assert!(rule.matches("any.interface", "AnyMember", "/any/path"));
+    }
+
+    #[test]
+    fn test_match_rule_to_string() {
+        let rule = MatchRule {
+            interface: Some("org.freedesktop.DBus.Properties".into()),
+            member: Some("PropertiesChanged".into()),
+            path: None,
+            path_prefix: None,
+            arg0: Some("org.freedesktop.UPower.Device".into()),
+            sender: None,
+        };
+
+        let s = rule.to_match_string();
+        assert!(s.contains("type='signal'"));
+        assert!(s.contains("interface='org.freedesktop.DBus.Properties'"));
+        assert!(s.contains("member='PropertiesChanged'"));
+        assert!(s.contains("arg0='org.freedesktop.UPower.Device'"));
+    }
+
+    #[test]
+    fn test_format_message() {
+        let mut values = HashMap::new();
+        values.insert("percentage".into(), "75".into());
+        values.insert("state".into(), "charging".into());
+
+        assert_eq!(format_message("{percentage}% ({state})", &values), "75% (charging)");
+        assert_eq!(format_message("Battery at {percentage}%", &values), "Battery at 75%");
+    }
+
+    #[test]
+    fn test_format_message_missing_key() {
+        let values = HashMap::new();
+        assert_eq!(format_message("{missing}", &values), "{missing}");
+    }
+
+    #[test]
+    fn test_builtin_battery_event() {
+        let event = builtin_battery_event();
+        assert_eq!(event.name, "Battery (built-in)");
+        assert!(event.enabled);
+        assert_eq!(event.bus, "system");
+        assert_eq!(event.match_rule.arg0, Some("org.freedesktop.UPower.Device".into()));
+        assert_eq!(event.format.message, "{percentage}%");
+        assert_eq!(event.conditions.debounce_ms, 1000);
+    }
+}

@@ -131,7 +131,8 @@ pub fn format_text(fmt: &str, icon: &str, message: &str, percent: Option<f64>) -
 }
 
 /// Measure text and icon dimensions without rendering
-pub fn measure_text(text: &str, config: &AppConfig, signal: Option<&Signal>) -> (i32, i32) {
+pub fn measure_text(text: &str, config: &AppConfig, signal: Option<&Signal>, scale: i32) -> (i32, i32) {
+    let scale = scale as f64;
     let dummy = cairo::ImageSurface::create(cairo::Format::ARgb32, 1, 1).unwrap();
     let cr = cairo::Context::new(&dummy).unwrap();
 
@@ -141,16 +142,16 @@ pub fn measure_text(text: &str, config: &AppConfig, signal: Option<&Signal>) -> 
     if let Some(s) = signal
         && !s.icon.is_empty()
     {
-        let icon_ext = measure_icon(&cr, &s.icon, s.icon_size);
-        icon_w = icon_ext.x_advance() + 10.0;
+        let icon_ext = measure_icon(&cr, &s.icon, s.icon_size * scale);
+        icon_w = icon_ext.x_advance() + 10.0 * scale;
     }
 
-    cr.set_font_size(config.font_size);
+    cr.set_font_size(config.font_size * scale);
     let ext = cr.text_extents(text).unwrap();
 
-    let w = ext.width().ceil() as i32 + 20 + icon_w as i32;
-    let h_content = ext.height().ceil() + 20.0;
-    let h = (h_content + V_PADDING_TOP + V_PADDING_BOTTOM) as i32;
+    let w = (ext.width().ceil() + 20.0 * scale + icon_w).ceil() as i32;
+    let h_content = ext.height().ceil() + 20.0 * scale;
+    let h = (h_content + V_PADDING_TOP * scale + V_PADDING_BOTTOM * scale) as i32;
 
     (w, h)
 }
@@ -161,7 +162,9 @@ pub fn draw_with_signal(
     config: &AppConfig,
     signal: Option<&Signal>,
     state: &DrawState,
+    scale: i32,
 ) -> (i32, i32) {
+    let scale = scale as f64;
     let (r_bg, g_bg, b_bg, a_bg) = config.bg_color;
     let (r, g, b, a) = signal.map(|s| s.color).unwrap_or(config.text_color);
 
@@ -180,22 +183,22 @@ pub fn draw_with_signal(
     if let Some(s) = signal
         && !s.icon.is_empty()
     {
-        let icon_ext = measure_icon(cr, &s.icon, s.icon_size);
-        icon_w = icon_ext.x_advance() + 10.0;
+        let icon_ext = measure_icon(cr, &s.icon, s.icon_size * scale);
+        icon_w = icon_ext.x_advance() + 10.0 * scale;
     }
 
-    cr.set_font_size(config.font_size);
+    cr.set_font_size(config.font_size * scale);
     let ext = cr.text_extents(text).unwrap();
 
-    let w = ext.width().ceil() as i32 + 20 + icon_w as i32;
-    let h_content = ext.height().ceil() + 20.0;
-    let h = (h_content + V_PADDING_TOP + V_PADDING_BOTTOM) as i32;
+    let w = (ext.width().ceil() + 20.0 * scale + icon_w).ceil() as i32;
+    let h_content = ext.height().ceil() + 20.0 * scale;
+    let h = (h_content + V_PADDING_TOP * scale + V_PADDING_BOTTOM * scale) as i32;
 
     cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
     cr.set_operator(cairo::Operator::Source);
     cr.paint().unwrap();
 
-    cr.translate(state.offset_x, state.offset_y + V_PADDING_TOP);
+    cr.translate(state.offset_x * scale, state.offset_y * scale + V_PADDING_TOP * scale);
 
     cr.set_operator(cairo::Operator::Over);
 
@@ -209,7 +212,7 @@ pub fn draw_with_signal(
     }
 
     if config.border_radius > 0.0 {
-        rounded_rect(cr, 0.0, 0.0, w as f64, h_content, config.border_radius);
+        rounded_rect(cr, 0.0, 0.0, w as f64, h_content, config.border_radius * scale);
         cr.fill().unwrap();
     } else {
         cr.rectangle(0.0, 0.0, w as f64, h_content);
@@ -218,20 +221,20 @@ pub fn draw_with_signal(
 
     let text_x = if let Some(s) = signal {
         if !s.icon.is_empty() {
-            let icon_ext = measure_icon(cr, &s.icon, s.icon_size);
+            let icon_ext = measure_icon(cr, &s.icon, s.icon_size * scale);
             cr.set_source_rgba(r, g, b, a * alpha);
             cr.move_to(
-                10.0 - icon_ext.x_bearing(),
+                10.0 * scale - icon_ext.x_bearing(),
                 h_content / 2.0 - (icon_ext.height() / 2.0 + icon_ext.y_bearing()),
             );
             cr.show_text(&s.icon).unwrap();
-            cr.set_font_size(config.font_size);
-            10.0 + icon_w
+            cr.set_font_size(config.font_size * scale);
+            10.0 * scale + icon_w
         } else {
-            10.0
+            10.0 * scale
         }
     } else {
-        10.0
+        10.0 * scale
     };
 
     cr.set_source_rgba(r, g, b, a * alpha);
@@ -239,4 +242,152 @@ pub fn draw_with_signal(
     cr.show_text(text).unwrap();
 
     (w, h)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config;
+
+    #[test]
+    fn test_format_text_with_percent() {
+        let result = format_text("{icon} {message} {percent}%", "BAT", "Battery", Some(75.0));
+        assert_eq!(result, "BAT Battery 75%");
+    }
+
+    #[test]
+    fn test_format_text_without_percent() {
+        let result = format_text("{icon} {message} {percent}%", "NET", "Connected", None);
+        assert_eq!(result, "NET Connected");
+    }
+
+    #[test]
+    fn test_format_text_percent_placeholder_only() {
+        let result = format_text("{message} {percent}%", "Test", "Hello", None);
+        assert_eq!(result, "Hello");
+    }
+
+    #[test]
+    fn test_format_text_no_percent_placeholder() {
+        let result = format_text("{message}", "X", "Hello", Some(50.0));
+        assert_eq!(result, "Hello");
+    }
+
+    #[test]
+    fn test_draw_state_reset() {
+        let mut state = DrawState {
+            frame: 100,
+            visible: false,
+            alpha: 0.5,
+            offset_x: 50.0,
+            offset_y: -30.0,
+        };
+        state.reset();
+        assert_eq!(state.frame, 0);
+        assert!(state.visible);
+        assert!((state.alpha - 1.0).abs() < f64::EPSILON);
+        assert!((state.offset_x - 0.0).abs() < f64::EPSILON);
+        assert!((state.offset_y - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_blink_animation() {
+        let mut state = DrawState::default();
+        state.tick(&config::Animation::Blink, 300.0, 60.0);
+        assert!(state.visible);
+        assert!((state.alpha - 1.0).abs() < f64::EPSILON);
+        assert!((state.offset_x - 0.0).abs() < f64::EPSILON);
+        assert!((state.offset_y - 0.0).abs() < f64::EPSILON);
+
+        for _ in 0..15 {
+            state.tick(&config::Animation::Blink, 300.0, 60.0);
+        }
+        assert!(!state.visible);
+    }
+
+    #[test]
+    fn test_pulse_animation() {
+        let mut state = DrawState::default();
+        for _ in 0..10 {
+            state.tick(&config::Animation::Pulse, 300.0, 60.0);
+        }
+        assert!(state.visible);
+        assert!(state.alpha >= 0.7 && state.alpha <= 1.1);
+        assert!((state.offset_x - 0.0).abs() < f64::EPSILON);
+        assert!((state.offset_y - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_fade_animation() {
+        let mut state = DrawState::default();
+        let total_frames = 180.0;
+        let fps = 60.0;
+
+        state.tick(&config::Animation::Fade, total_frames, fps);
+        assert!((state.alpha - (1.0 / (total_frames * 0.25))).abs() < 0.01);
+
+        for _ in 0..50 {
+            state.tick(&config::Animation::Fade, total_frames, fps);
+        }
+        assert!((state.alpha - 1.0).abs() < 0.01);
+
+        for _ in 0..130 {
+            state.tick(&config::Animation::Fade, total_frames, fps);
+        }
+        assert!(state.alpha < 0.5);
+    }
+
+    #[test]
+    fn test_slide_right_animation() {
+        let mut state = DrawState::default();
+        state.tick(&config::Animation::SlideRight, 300.0, 60.0);
+        assert!(state.visible);
+        assert!((state.alpha - 1.0).abs() < f64::EPSILON);
+        assert!(state.offset_x < 0.0);
+        assert!((state.offset_y - 0.0).abs() < f64::EPSILON);
+
+        for _ in 0..50 {
+            state.tick(&config::Animation::SlideRight, 300.0, 60.0);
+        }
+        assert!((state.offset_x - 0.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_slide_left_animation() {
+        let mut state = DrawState::default();
+        state.tick(&config::Animation::SlideLeft, 300.0, 60.0);
+        assert!(state.visible);
+        assert!(state.offset_x > 0.0);
+
+        for _ in 0..50 {
+            state.tick(&config::Animation::SlideLeft, 300.0, 60.0);
+        }
+        assert!((state.offset_x - 0.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_bounce_animation() {
+        let mut state = DrawState::default();
+        state.tick(&config::Animation::Bounce, 300.0, 60.0);
+        assert!(state.visible);
+        assert!((state.alpha - 1.0).abs() < f64::EPSILON);
+        assert!((state.offset_x - 0.0).abs() < f64::EPSILON);
+        assert!(state.offset_y <= 0.0);
+    }
+
+    #[test]
+    fn test_none_animation() {
+        let mut state = DrawState {
+            frame: 50,
+            visible: false,
+            alpha: 0.3,
+            offset_x: 100.0,
+            offset_y: -50.0,
+        };
+        state.tick(&config::Animation::None, 300.0, 60.0);
+        assert!(state.visible);
+        assert!((state.alpha - 1.0).abs() < f64::EPSILON);
+        assert!((state.offset_x - 0.0).abs() < f64::EPSILON);
+        assert!((state.offset_y - 0.0).abs() < f64::EPSILON);
+    }
 }
