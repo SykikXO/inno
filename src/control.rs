@@ -47,8 +47,8 @@ impl InnoService {
     /// Get current battery state
     fn get_state(&self) -> zbus::fdo::Result<(f64, String)> {
         let pct = self.battery_percentage.load(std::sync::atomic::Ordering::Relaxed) as f64 / 100.0;
-        let state = self.battery_state.read().unwrap().clone();
-        Ok((pct * 100.0, state))
+        let state = self.battery_state.read().unwrap_or_else(|e| e.into_inner()).clone();
+        Ok((pct, state))
     }
 
     /// Reload configuration
