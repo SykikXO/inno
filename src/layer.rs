@@ -98,10 +98,10 @@ impl LayerApp {
 
         layer.set_anchor(anchor);
         layer.set_margin(
-            config.anchor.margin_v,
-            config.anchor.margin_h,
-            config.anchor.margin_v,
-            config.anchor.margin_h,
+            config.anchor.margin_v + config.anchor.offset_y,
+            config.anchor.margin_h + config.anchor.offset_x,
+            config.anchor.margin_v - config.anchor.offset_y,
+            config.anchor.margin_h - config.anchor.offset_x,
         );
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         layer.set_size(1, 1);
@@ -134,19 +134,16 @@ impl LayerApp {
         // Skip drawing if animation says not visible
         if w <= 1 || h <= 1 {
             // For blink-off, just clear the surface
-            if let Some(layer) = &self.layer_surface {
-                if let Some(pool) = &mut self.pool {
-                    if let Ok((buffer, canvas)) =
-                        pool.create_buffer(1, 1, 4, wl_shm::Format::Argb8888)
-                    {
-                        for i in canvas.iter_mut() {
-                            *i = 0;
-                        }
-                        layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
-                        layer.wl_surface().damage(0, 0, 1, 1);
-                        layer.commit();
-                    }
+            if let Some(layer) = &self.layer_surface
+                && let Some(pool) = &mut self.pool
+                && let Ok((buffer, canvas)) = pool.create_buffer(1, 1, 4, wl_shm::Format::Argb8888)
+            {
+                for i in canvas.iter_mut() {
+                    *i = 0;
                 }
+                layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
+                layer.wl_surface().damage(0, 0, 1, 1);
+                layer.commit();
             }
             return;
         }
@@ -154,12 +151,20 @@ impl LayerApp {
         self.width = w as u32;
         self.height = h as u32;
 
-        // Create pool if needed
-        if self.pool.is_none() {
-            self.pool = Some(
-                SlotPool::new(self.width as usize * self.height as usize * 4, &self.shm_state)
-                    .expect("Failed to create pool"),
-            );
+        // Create or resize pool if needed
+        let needed = self.width as usize * self.height as usize * 4;
+        match &mut self.pool {
+            None => {
+                self.pool =
+                    Some(SlotPool::new(needed, &self.shm_state).expect("Failed to create pool"));
+            }
+            Some(pool) => {
+                if pool.len() < needed {
+                    self.pool = Some(
+                        SlotPool::new(needed, &self.shm_state).expect("Failed to resize pool"),
+                    );
+                }
+            }
         }
 
         let stride = self.width as i32 * 4;
@@ -210,16 +215,15 @@ impl LayerApp {
             self.height = 1;
             layer.set_size(1, 1);
 
-            if let Some(pool) = &mut self.pool {
-                if let Ok((buffer, canvas)) = pool.create_buffer(1, 1, 4, wl_shm::Format::Argb8888)
-                {
-                    for i in canvas.iter_mut() {
-                        *i = 0;
-                    }
-                    layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
-                    layer.wl_surface().damage(0, 0, 1, 1);
-                    layer.commit();
+            if let Some(pool) = &mut self.pool
+                && let Ok((buffer, canvas)) = pool.create_buffer(1, 1, 4, wl_shm::Format::Argb8888)
+            {
+                for i in canvas.iter_mut() {
+                    *i = 0;
                 }
+                layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
+                layer.wl_surface().damage(0, 0, 1, 1);
+                layer.commit();
             }
         }
     }
