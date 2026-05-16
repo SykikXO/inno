@@ -81,25 +81,25 @@ impl MatchRule {
 
     /// Check if a message matches this rule
     pub fn matches(&self, interface: &str, member: &str, path: &str) -> bool {
-        if let Some(ref i) = self.interface {
-            if i != interface {
-                return false;
-            }
+        if let Some(ref i) = self.interface
+            && i != interface
+        {
+            return false;
         }
-        if let Some(ref m) = self.member {
-            if m != member {
-                return false;
-            }
+        if let Some(ref m) = self.member
+            && m != member
+        {
+            return false;
         }
-        if let Some(ref p) = self.path {
-            if p != path {
-                return false;
-            }
+        if let Some(ref p) = self.path
+            && p != path
+        {
+            return false;
         }
-        if let Some(ref prefix) = self.path_prefix {
-            if !path.starts_with(prefix) {
-                return false;
-            }
+        if let Some(ref prefix) = self.path_prefix
+            && !path.starts_with(prefix)
+        {
+            return false;
         }
         true
     }
@@ -110,13 +110,10 @@ impl MatchRule {
 pub struct FormatConfig {
     #[serde(default)]
     pub message: String,
-    #[allow(dead_code)]
-    #[serde(default)]
-    pub signal: Option<String>,
 }
 
 /// Condition configuration for triggering notifications
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct ConditionsConfig {
     #[serde(default)]
     pub trigger_on: Vec<String>,
@@ -124,12 +121,6 @@ pub struct ConditionsConfig {
     pub debounce_ms: u64,
     #[serde(default)]
     pub require_all: bool, // AND logic when true, OR when false
-}
-
-impl Default for ConditionsConfig {
-    fn default() -> Self {
-        Self { trigger_on: vec![], debounce_ms: 0, require_all: false }
-    }
 }
 
 fn default_debounce() -> u64 {
@@ -219,7 +210,7 @@ fn builtin_battery_event() -> EventConfig {
         },
         extract,
         state_map,
-        format: FormatConfig { message: "{percentage}%".to_string(), signal: None },
+        format: FormatConfig { message: "{percentage}%".to_string() },
         conditions: ConditionsConfig { trigger_on: vec![], debounce_ms: 1000, require_all: false },
     }
 }
@@ -228,7 +219,7 @@ fn builtin_battery_event() -> EventConfig {
 pub fn format_message(template: &str, values: &HashMap<String, String>) -> String {
     let mut result = template.to_string();
     for (key, value) in values {
-        result = result.replace(&format!("{{{}}}", key), value);
+        result = result.replace(&format!("{{{key}}}"), value);
     }
     result
 }
