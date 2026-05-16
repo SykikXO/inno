@@ -12,9 +12,6 @@ pub const HIDE_TIMEOUT_SECS: u64 = 86400;
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
-    #[allow(dead_code)]
-    #[error("Config file not found in any of the search paths")]
-    NotFound,
     #[error("Failed to read config file: {0}")]
     ReadError(#[from] std::io::Error),
     #[error("Parse error in config: {0}")]
@@ -119,6 +116,8 @@ pub struct Anchor {
     pub v: VAnchor,
     pub margin_h: i32,
     pub margin_v: i32,
+    pub offset_x: i32,
+    pub offset_y: i32,
 }
 
 impl Anchor {
@@ -136,7 +135,9 @@ impl Anchor {
         };
         let margin_h = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_MARGIN);
         let margin_v = parts.get(3).and_then(|s| s.parse().ok()).unwrap_or(margin_h);
-        Anchor { h, v, margin_h, margin_v }
+        let offset_x = parts.get(4).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let offset_y = parts.get(5).and_then(|s| s.parse().ok()).unwrap_or(0);
+        Anchor { h, v, margin_h, margin_v, offset_x, offset_y }
     }
 }
 
@@ -242,17 +243,11 @@ impl AppConfig {
     pub fn load() -> Self {
         let mut config = Self::default();
 
-        // Search paths for config files (TOML first, then legacy .conf)
         let search_paths = [
             std::env::current_dir().ok().map(|p| p.join("inno.toml")),
             std::env::current_dir().ok().and_then(|p| p.parent().map(|pp| pp.join("inno.toml"))),
             dirs::config_dir().map(|p| p.join("inno/inno.toml")),
             Some(PathBuf::from("/etc/xdg/inno/inno.toml")),
-            // Legacy .conf paths
-            std::env::current_dir().ok().map(|p| p.join("inno.conf")),
-            std::env::current_dir().ok().and_then(|p| p.parent().map(|pp| pp.join("inno.conf"))),
-            dirs::config_dir().map(|p| p.join("inno/inno.conf")),
-            Some(PathBuf::from("/etc/xdg/inno/inno.conf")),
         ];
 
         let mut loaded_path = None;
@@ -272,15 +267,8 @@ impl AppConfig {
         config.config_path = Some(config_path.clone());
         eprintln!("Loading config from: {:?}", config_path);
 
-        // Check if it's a TOML file
-        let is_toml = config_path.extension().map(|e| e == "toml").unwrap_or(false);
-
-        if is_toml {
-            if let Err(e) = config.load_toml(&config_path) {
-                eprintln!("Failed to parse TOML config: {}", e);
-            }
-        } else {
-            config.load_legacy(&config_path);
+        if let Err(e) = config.load_toml(&config_path) {
+            eprintln!("Failed to parse TOML config: {}", e);
         }
 
         config
@@ -362,108 +350,6 @@ impl AppConfig {
         Ok(())
     }
 
-    fn load_legacy(&mut self, path: &PathBuf) {
-        let Ok(content) = std::fs::read_to_string(path) else {
-            return;
-        };
-
-        // First pass: collect colors
-        let mut colors: HashMap<String, (f64, f64, f64, f64)> = HashMap::new();
-        for line in content.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            if let Some((key, value)) = line.split_once('=') {
-                let key = key.trim();
-                let value = value.trim();
-                if value.starts_with('(') && value.ends_with(')') {
-                    if let Some(c) = Self::parse_color(value) {
-                        colors.insert(key.to_string(), c);
-                    }
-                }
-            }
-        }
-
-        self.text_color = colors.get("text_color").copied().unwrap_or(self.text_color);
-        self.bg_color = colors.get("bg_color").copied().unwrap_or(self.bg_color);
-
-        // Second pass: parse everything else
-        for line in content.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            if let Some((key, value)) = line.split_once('=') {
-                let key = key.trim();
-                let value = value.trim();
-
-                match key {
-                    "font" => self.font = value.to_string(),
-                    "font_size" => self.font_size = value.parse().unwrap_or(DEFAULT_FONT_SIZE),
-                    "font_slant" => self.font_slant = parse_font_slant(value),
-                    "font_weight" => self.font_weight = parse_font_weight(value),
-                    "position" => self.anchor = Anchor::parse(value),
-                    "format" => self.format = value.to_string(),
-                    "border_radius" => self.border_radius = value.parse().unwrap_or(0.0),
-                    "gradient" => {
-                        self.gradient = value.eq_ignore_ascii_case("true") || value == "1"
-                    }
-                    "output" => self.output = parse_output_mode(value),
-                    "battery_mode" => self.battery_mode = parse_battery_mode(value),
-                    "signal" => {
-                        if let Some(s) = self.parse_legacy_signal(value, &colors) {
-                            self.signals.push(s);
-                        }
-                    }
-                    _ => {
-                        // Color definitions handled in first pass
-                    }
-                }
-            }
-        }
-    }
-
-    fn parse_color(value: &str) -> Option<(f64, f64, f64, f64)> {
-        let inner = value.trim_start_matches('(').trim_end_matches(')');
-        let parts: Vec<f64> = inner.split(',').filter_map(|s| s.trim().parse().ok()).collect();
-        if parts.len() >= 4 { Some((parts[0], parts[1], parts[2], parts[3])) } else { None }
-    }
-
-    fn parse_legacy_signal(
-        &self,
-        value: &str,
-        colors: &HashMap<String, (f64, f64, f64, f64)>,
-    ) -> Option<Signal> {
-        let parts: Vec<&str> = value.split(',').map(|s| s.trim()).collect();
-        if parts.len() < 8 {
-            return None;
-        }
-
-        let color = colors
-            .get(parts[3])
-            .copied()
-            .or_else(|| Self::parse_color(parts[3]))
-            .unwrap_or((1.0, 1.0, 1.0, 1.0));
-
-        Some(Signal {
-            message: parts[0].to_string(),
-            icon: parts[1].to_string(),
-            icon_size: parts[2].parse().unwrap_or(DEFAULT_ICON_SIZE),
-            color,
-            threshold: parts[4].parse().unwrap_or(100.0),
-            state_filter: parts[5].to_lowercase(),
-            animation: parse_animation(parts[6]),
-            duration: parts[7].parse().unwrap_or(5),
-            sound: parts.get(8).filter(|s| !s.is_empty()).map(|s| PathBuf::from(*s)),
-        })
-    }
-
-    #[allow(dead_code)]
-    pub fn find_signal(&self, pct: f64, state: &str) -> Option<&Signal> {
-        self.find_signal_idx(pct, state).map(|i| &self.signals[i])
-    }
-
     /// Returns the index of the best matching signal, avoiding allocation
     /// when only the index is needed (e.g. for caching during animation).
     pub fn find_signal_idx(&self, pct: f64, state: &str) -> Option<usize> {
@@ -473,10 +359,8 @@ impl AppConfig {
         let mut best_threshold: f64 = if is_charging { f64::MIN } else { f64::MAX };
 
         for (i, s) in self.signals.iter().enumerate() {
-            let state_match =
-                s.state_filter == "any" || s.state_filter.eq_ignore_ascii_case(state);
-            let threshold_match =
-                if is_charging { pct >= s.threshold } else { pct <= s.threshold };
+            let state_match = s.state_filter == "any" || s.state_filter.eq_ignore_ascii_case(state);
+            let threshold_match = if is_charging { pct >= s.threshold } else { pct <= s.threshold };
 
             if state_match && threshold_match {
                 let is_better = if is_charging {
