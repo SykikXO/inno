@@ -317,7 +317,13 @@ async fn main() -> anyhow::Result<()> {
                                 app.draw_text_with_signal(&text, &config, Some(sig), &draw_state);
                                 animating = sig.animation != config::Animation::None;
                                 current_signal_idx = sig_idx;
-                                hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(sig.duration)));
+                                // Add 100ms buffer so fade-out animation completes before hiding
+                                let hide_delay = if sig.animation != config::Animation::None {
+                                    Duration::from_millis(sig.duration * 1000 + 100)
+                                } else {
+                                    Duration::from_secs(sig.duration)
+                                };
+                                hide_timer = Box::pin(tokio::time::sleep(hide_delay));
                                 current_text = Some(text);
                             }
                         }

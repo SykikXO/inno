@@ -42,16 +42,14 @@ impl DrawState {
                 self.visible = true;
                 self.offset_x = 0.0;
                 self.offset_y = 0.0;
-                // Consistent 0.5s fade, but finish slightly earlier than total_frames
-                // to avoid being cut off by the hide_timer race.
-                let fade_duration = (fps * 0.5).min(total_frames / 3.0).max(1.0);
-                let fade_end = total_frames - 1.0; // Finish 1 frame early
-                let fade_out_start = total_frames - fade_duration - 1.0;
+                // Fade in/out each take 25% of total duration for a smooth, noticeable transition
+                let fade_duration = (total_frames * 0.25).max(1.0);
+                let fade_out_start = total_frames - fade_duration;
 
                 if t < fade_duration {
                     self.alpha = (t / fade_duration).min(1.0); // Fade in
-                } else if t > fade_out_start {
-                    self.alpha = ((fade_end - t) / fade_duration).clamp(0.0, 1.0); // Fade out
+                } else if t >= fade_out_start {
+                    self.alpha = ((total_frames - t) / fade_duration).clamp(0.0, 1.0); // Fade out
                 } else {
                     self.alpha = 1.0; // Fully visible
                 }
