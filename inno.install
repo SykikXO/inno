@@ -1,66 +1,19 @@
 post_install() {
-  _print_banner
-  echo "  Thank you for installing inno!"
-  echo "  Config: /etc/xdg/inno/inno.toml"
-  echo "  Events: /etc/xdg/inno/events/"
+  echo "==> inno installed successfully!"
   echo ""
-  echo "  Run 'inno' to start. Run 'inno --debug' for verbose output."
+  echo "==> Copy config to ~/.config/inno/ and customize:"
+  echo "    mkdir -p ~/.config/inno"
+  echo "    cp /etc/xdg/inno/inno.toml ~/.config/inno/"
+  echo "    cp -r /etc/xdg/inno/events/ ~/.config/inno/"
   echo ""
+  echo "==> Add to your compositor autostart:"
+  echo "    Hyprland:  exec-once = inno --internal-daemon"
+  echo "    Sway:      exec inno --internal-daemon"
+  echo "    River:     riverctl spawn inno --internal-daemon"
 }
 
 post_upgrade() {
-  _cleanup_legacy_service
-  _print_banner
-  echo ""
-  echo -e "  \033[1;31m╔══════════════════════════════════════════════════╗\033[0m"
-  echo -e "  \033[1;31m║          ⚠  CONFIGURATION UPDATED  ⚠            ║\033[0m"
-  echo -e "  \033[1;31m╚══════════════════════════════════════════════════╝\033[0m"
-  echo ""
-  echo -e "  \033[1;33mNew in v0.4.0:\033[0m"
-  echo -e "  \033[0;36m•\033[0m Bluetooth connect/disconnect notifications"
-  echo -e "  \033[0;36m•\033[0m Per-device battery tracking (laptop vs headset)"
-  echo -e "  \033[0;36m•\033[0m Dynamic device name display"
-  echo -e "  \033[0;36m•\033[0m JetBrainsMono Nerd Font as default"
-  echo ""
-  echo -e "  \033[1;33mNew config files:\033[0m"
-  echo -e "  \033[0;36m•\033[0m /etc/xdg/inno/events/bluetooth.toml"
-  echo -e "  \033[0;36m•\033[0m /etc/xdg/inno/events/laptop_battery.toml"
-  echo -e "  \033[0;36m•\033[0m /etc/xdg/inno/events/headset_battery.toml"
-  echo ""
-  echo -e "  \033[1;31mIf you have custom configs, check for .pacnew files:\033[0m"
-  echo -e "  \033[0;37m  find /etc/xdg/inno -name '*.pacnew'\033[0m"
-  echo ""
-}
-
-_print_banner() {
-  echo ""
-  echo -e "  \033[1;31m ___                    \033[0m"
-  echo -e "  \033[1;31m|_ _|_ __  _ __   ___   \033[0m"
-  echo -e "  \033[1;31m | || '_ \\| '_ \\ / _ \\  \033[0m"
-  echo -e "  \033[1;31m | || | | | | | | (_) | \033[0m"
-  echo -e "  \033[1;31m|___|_| |_|_| |_|\\___/  \033[0m"
-  echo -e "  \033[0;37m  event-driven notifications\033[0m"
-}
-
-_cleanup_legacy_service() {
-  local service_files=(
-    "/usr/lib/systemd/user/inno.service"
-    "/etc/systemd/user/inno.service"
-    "/usr/lib/systemd/system/inno.service"
-    "/etc/systemd/system/inno.service"
-  )
-
-  local found=0
-  for f in "${service_files[@]}"; do
-    if [ -f "$f" ]; then
-      echo "  -> Removing legacy systemd service: $f"
-      rm -f "$f"
-      found=1
-    fi
-  done
-
-  if [ $found -eq 1 ]; then
-    echo "  -> [IMPORTANT] inno systemd service has been removed."
-    echo "  -> If you had it enabled, please run: systemctl --user disable inno.service"
-  fi
+  echo "==> inno upgraded to $2"
+  echo "==> Check /etc/xdg/inno/ for new config options"
+  echo "==> Compare with your ~/.config/inno/ and merge changes"
 }

@@ -1,26 +1,26 @@
-# Maintainer: Sykik [xo.sykik@gmail.com]
+# Maintainer: Sykik <xo.sykik@gmail.com>
 pkgname=inno
-pkgver=0.4.1
+pkgver=0.5.0
 pkgrel=1
-pkgdesc="A lightweight, event-driven Wayland notification agent (Rust)"
+pkgdesc="A lightweight, event-driven Wayland notification agent"
 arch=('x86_64')
 url="https://github.com/SykikXO/inno"
 license=('MIT')
-depends=('wayland' 'cairo' 'dbus' 'glibc' 'ttf-jetbrains-mono-nerd')
-makedepends=('rust' 'cargo')
-source=()
-md5sums=()
+depends=('wayland' 'cairo' 'dbus' 'glibc')
+makedepends=('rust>=1.85' 'cargo')
+source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
+sha256sums=('SKIP')
 
 build() {
-  cd "$srcdir/.."
+  cd "${pkgname}-${pkgver}"
   cargo build --release
 }
 
 package() {
-  cd "$srcdir/.."
-  install -Dm755 target/release/inno "$pkgdir/usr/bin/inno"
-  install -Dm644 inno.toml "$pkgdir/etc/xdg/inno/inno.toml"
+  cd "${pkgname}-${pkgver}"
+  install -Dm755 target/release/inno "${pkgdir}/usr/bin/inno"
+  install -Dm644 inno.toml "${pkgdir}/etc/xdg/inno/inno.toml"
   for f in events/*.toml; do
-    install -Dm644 "$f" "$pkgdir/etc/xdg/inno/$f"
+    install -Dm644 "$f" "${pkgdir}/etc/xdg/inno/${f}"
   done
 }
