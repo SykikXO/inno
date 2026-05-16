@@ -311,7 +311,7 @@ async fn main() -> anyhow::Result<()> {
                 };
 
                 let text = draw::format_text(
-                    &config.format,
+                    &config.format_template,
                     &test_signal.icon,
                     &test_signal.message,
                     Some(50.0),

@@ -162,7 +162,7 @@ impl NotificationState {
     ) -> std::time::Duration {
         let dynamic_msg = sig.message.replace("{message}", &notify_event.message);
         let text = format_text(
-            &config.format,
+            &config.format_template,
             &sig.icon,
             &dynamic_msg,
             Some(pct_for_match),

@@ -1,4 +1,4 @@
-use crate::config::{Animation, AppConfig, Signal};
+use crate::config::{Animation, AppConfig, FormatTemplate, Signal};
 use cairo::{Context, LinearGradient};
 use std::f64::consts::PI;
 
@@ -119,15 +119,9 @@ fn measure_icon(cr: &Context, icon: &str, size: f64) -> cairo::TextExtents {
     cr.text_extents(icon).unwrap()
 }
 
-/// Format notification text using config format string
-pub fn format_text(fmt: &str, icon: &str, message: &str, percent: Option<f64>) -> String {
-    let mut res = fmt.replace("{icon}", icon).replace("{message}", message);
-    if let Some(pct) = percent {
-        res = res.replace("{percent}", &format!("{:.0}", pct));
-    } else {
-        res = res.replace("{percent}%", "").replace("{percent}", "").trim().to_string();
-    }
-    res
+/// Format notification text using pre-compiled template
+pub fn format_text(fmt: &FormatTemplate, icon: &str, message: &str, percent: Option<f64>) -> String {
+    fmt.render(icon, message, percent)
 }
 
 /// Measure text and icon dimensions without rendering
@@ -246,28 +240,33 @@ pub fn draw_with_signal(
 mod tests {
     use super::*;
     use crate::config;
+    use crate::config::FormatTemplate;
 
     #[test]
     fn test_format_text_with_percent() {
-        let result = format_text("{icon} {message} {percent}%", "BAT", "Battery", Some(75.0));
+        let tmpl = FormatTemplate::parse("{icon} {message} {percent}%");
+        let result = format_text(&tmpl, "BAT", "Battery", Some(75.0));
         assert_eq!(result, "BAT Battery 75%");
     }
 
     #[test]
     fn test_format_text_without_percent() {
-        let result = format_text("{icon} {message} {percent}%", "NET", "Connected", None);
+        let tmpl = FormatTemplate::parse("{icon} {message} {percent}%");
+        let result = format_text(&tmpl, "NET", "Connected", None);
         assert_eq!(result, "NET Connected");
     }
 
     #[test]
     fn test_format_text_percent_placeholder_only() {
-        let result = format_text("{message} {percent}%", "Test", "Hello", None);
+        let tmpl = FormatTemplate::parse("{message} {percent}%");
+        let result = format_text(&tmpl, "Test", "Hello", None);
         assert_eq!(result, "Hello");
     }
 
     #[test]
     fn test_format_text_no_percent_placeholder() {
-        let result = format_text("{message}", "X", "Hello", Some(50.0));
+        let tmpl = FormatTemplate::parse("{message}");
+        let result = format_text(&tmpl, "X", "Hello", Some(50.0));
         assert_eq!(result, "Hello");
     }
 

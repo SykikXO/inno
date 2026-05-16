@@ -6,6 +6,81 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+#[derive(Debug, Clone)]
+enum TemplateSegment {
+    Literal(String),
+    Placeholder(String),
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Template {
+    segments: Vec<TemplateSegment>,
+}
+
+impl Template {
+    pub fn parse(s: &str) -> Self {
+        let mut segments = Vec::new();
+        let mut chars = s.chars().peekable();
+        let mut literal = String::new();
+
+        while let Some(c) = chars.next() {
+            if c == '{' {
+                let mut placeholder = String::new();
+                let mut found_close = false;
+                while let Some(&nc) = chars.peek() {
+                    chars.next();
+                    if nc == '}' {
+                        found_close = true;
+                        break;
+                    }
+                    placeholder.push(nc);
+                }
+                if found_close {
+                    if !literal.is_empty() {
+                        segments.push(TemplateSegment::Literal(std::mem::take(&mut literal)));
+                    }
+                    segments.push(TemplateSegment::Placeholder(placeholder));
+                } else {
+                    literal.push('{');
+                    literal.push_str(&placeholder);
+                }
+            } else {
+                literal.push(c);
+            }
+        }
+        if !literal.is_empty() {
+            segments.push(TemplateSegment::Literal(literal));
+        }
+        Self { segments }
+    }
+
+    pub fn render(&self, values: &HashMap<String, String>) -> String {
+        let mut capacity = 0;
+        for seg in &self.segments {
+            capacity += match seg {
+                TemplateSegment::Literal(s) => s.len(),
+                TemplateSegment::Placeholder(key) => values.get(key).map_or(key.len() + 2, |v| v.len()),
+            };
+        }
+        let mut result = String::with_capacity(capacity);
+        for seg in &self.segments {
+            match seg {
+                TemplateSegment::Literal(s) => result.push_str(s),
+                TemplateSegment::Placeholder(key) => {
+                    if let Some(v) = values.get(key) {
+                        result.push_str(v);
+                    } else {
+                        result.push('{');
+                        result.push_str(key);
+                        result.push('}');
+                    }
+                }
+            }
+        }
+        result
+    }
+}
+
 /// An event definition loaded from TOML
 #[derive(Debug, Clone, Deserialize)]
 pub struct EventConfig {
@@ -110,6 +185,8 @@ impl MatchRule {
 pub struct FormatConfig {
     #[serde(default)]
     pub message: String,
+    #[serde(skip)]
+    pub template: Template,
 }
 
 /// Condition configuration for triggering notifications
@@ -181,8 +258,9 @@ pub fn load_events() -> Vec<EventConfig> {
 /// Load a single event config file
 fn load_event_file(path: &PathBuf) -> Result<EventConfig, String> {
     let content = std::fs::read_to_string(path).map_err(|e| format!("Read error: {}", e))?;
-
-    toml::from_str(&content).map_err(|e| format!("Parse error: {}", e))
+    let mut event: EventConfig = toml::from_str(&content).map_err(|e| format!("Parse error: {}", e))?;
+    event.format.template = Template::parse(&event.format.message);
+    Ok(event)
 }
 
 /// Built-in battery event as fallback
@@ -210,18 +288,9 @@ fn builtin_battery_event() -> EventConfig {
         },
         extract,
         state_map,
-        format: FormatConfig { message: "{percentage}%".to_string() },
+        format: FormatConfig { message: "{percentage}%".to_string(), template: Template::parse("{percentage}%") },
         conditions: ConditionsConfig { trigger_on: vec![], debounce_ms: 1000, require_all: false },
     }
-}
-
-/// Format message using extracted values
-pub fn format_message(template: &str, values: &HashMap<String, String>) -> String {
-    let mut result = template.to_string();
-    for (key, value) in values {
-        result = result.replace(&format!("{{{key}}}"), value);
-    }
-    result
 }
 
 #[cfg(test)]
@@ -304,14 +373,17 @@ mod tests {
         values.insert("percentage".into(), "75".into());
         values.insert("state".into(), "charging".into());
 
-        assert_eq!(format_message("{percentage}% ({state})", &values), "75% (charging)");
-        assert_eq!(format_message("Battery at {percentage}%", &values), "Battery at 75%");
+        let tmpl = Template::parse("{percentage}% ({state})");
+        assert_eq!(tmpl.render(&values), "75% (charging)");
+        let tmpl2 = Template::parse("Battery at {percentage}%");
+        assert_eq!(tmpl2.render(&values), "Battery at 75%");
     }
 
     #[test]
     fn test_format_message_missing_key() {
         let values = HashMap::new();
-        assert_eq!(format_message("{missing}", &values), "{missing}");
+        let tmpl = Template::parse("{missing}");
+        assert_eq!(tmpl.render(&values), "{missing}");
     }
 
     #[test]
