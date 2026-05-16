@@ -1,17 +1,17 @@
 # Inno Battery Notification Configuration
 
 [general]
-font = "JetBrainsMono Nerd Font"
+font = "InputMono Nerd Font"
 font_size = 18.0
 font_slant = "normal"    # normal, italic, oblique
 font_weight = "normal"   # normal, bold
-position = "center,bottom,10"
+position = "center,bottom,0,-50,0,0"
 format = "{message} {percent}%"
 fps = 60
 
 [appearance]
 text_color = [1.0, 1.0, 1.0, 1.0]
-bg_color = [0.0, 0.0, 0.0, 0.7]
+bg_color = [0.0, 0.0, 0.0, 0.5]
 border_radius = 8.0
 gradient = true
 
@@ -36,8 +36,8 @@ icon_size = 24
 color = "white"
 threshold = 100
 state = "discharging"
-animation = "bounce"
-duration = 2
+animation = "fade"
+duration = 3
 
 [[signal]]
 message = "Charging"
@@ -47,7 +47,7 @@ color = "green"
 threshold = 0
 state = "charging"
 animation = "fade"
-duration = 2
+duration = 3
 
 [[signal]]
 message = "Critical!"
@@ -57,7 +57,7 @@ color = "red"
 threshold = 15
 state = "discharging"
 animation = "blink"
-duration = 10
+duration = 60
 
 [[signal]]
 message = "Low Battery!"
@@ -77,7 +77,7 @@ color = "yellow"
 threshold = 80
 state = "charging"
 animation = "bounce"
-duration = 5
+duration = 30
 
 [[signal]]
 message = "{message}"
