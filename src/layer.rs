@@ -4,17 +4,17 @@ use crate::draw;
 use crate::draw::DrawState;
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_seat,
+    delegate_compositor, delegate_layer, delegate_output, delegate_pointer, delegate_registry, delegate_seat,
     delegate_shm,
     output::{OutputHandler, OutputState},
     reexports::client::{
         Connection, QueueHandle,
         globals::registry_queue_init,
-        protocol::{wl_output, wl_seat, wl_shm, wl_surface},
+        protocol::{wl_output, wl_seat, wl_shm, wl_surface, wl_pointer},
     },
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
-    seat::{Capability, SeatHandler, SeatState},
+    seat::{Capability, SeatHandler, SeatState, pointer::PointerHandler},
     shell::{
         WaylandSurface,
         wlr_layer::{
@@ -39,6 +39,10 @@ pub struct LayerApp {
     pub pool: Option<SlotPool>,
     pub exit: bool,
     pub configured: bool,
+    pub scale_factor: i32,
+    pub scale_changed: bool,
+    pub pointer: Option<wl_pointer::WlPointer>,
+    pub clicked: bool,
 }
 
 impl LayerApp {
@@ -64,23 +68,47 @@ impl LayerApp {
             pool: None,
             exit: false,
             configured: false,
+            scale_factor: 1,
+            scale_changed: false,
+            pointer: None,
+            clicked: false,
         })
     }
 
     pub fn create_surface(&mut self, qh: &QueueHandle<Self>, config: &AppConfig) {
-        use crate::config::{HAnchor, VAnchor};
+        use crate::config::{HAnchor, VAnchor, OutputMode};
 
         if self.layer_surface.is_some() {
             return;
         }
 
         let surface = self.compositor_state.create_surface(qh);
+
+        let target_output = match &config.output {
+            OutputMode::Named(name) => {
+                let mut found = None;
+                for output in self.output_state.outputs() {
+                    if let Some(info) = self.output_state.info(&output)
+                        && (info.model.contains(name) || info.make.contains(name)) {
+                            found = Some(output);
+                            eprintln!("Matched output: {} {} (requested: {})", info.make, info.model, name);
+                            break;
+                        }
+                }
+                if found.is_none() {
+                    eprintln!("No output matching '{}' found, using default", name);
+                }
+                found
+            }
+            _ => None,
+        };
+
         let layer = self.layer_shell.create_layer_surface(
             qh,
             surface,
             Layer::Overlay,
             Some("inno_notification"),
-            None,
+            target_output.as_ref(),
         );
 
         // Build anchor flags from config
@@ -97,17 +125,31 @@ impl LayerApp {
         }
 
         layer.set_anchor(anchor);
+        let s = self.scale_factor;
         layer.set_margin(
-            config.anchor.margin_v + config.anchor.offset_y,
-            config.anchor.margin_h + config.anchor.offset_x,
-            config.anchor.margin_v - config.anchor.offset_y,
-            config.anchor.margin_h - config.anchor.offset_x,
+            (config.anchor.margin_v + config.anchor.offset_y) * s,
+            (config.anchor.margin_h + config.anchor.offset_x) * s,
+            (config.anchor.margin_v - config.anchor.offset_y) * s,
+            (config.anchor.margin_h - config.anchor.offset_x) * s,
         );
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         layer.set_size(1, 1);
         layer.commit();
 
         self.layer_surface = Some(layer);
+    }
+
+    pub fn update_scale_margins(&mut self, config: &AppConfig) {
+        if let Some(layer) = &self.layer_surface {
+            let s = self.scale_factor;
+            layer.set_margin(
+                (config.anchor.margin_v + config.anchor.offset_y) * s,
+                (config.anchor.margin_h + config.anchor.offset_x) * s,
+                (config.anchor.margin_v - config.anchor.offset_y) * s,
+                (config.anchor.margin_h - config.anchor.offset_x) * s,
+            );
+            layer.commit();
+        }
     }
 
     /// Draw text without signal (for DBus Show command)
@@ -127,7 +169,7 @@ impl LayerApp {
             return;
         }
 
-        let (w, h) = draw::measure_text(text, config, signal);
+        let (w, h) = draw::measure_text(text, config, signal, self.scale_factor);
 
         if w <= 1 || h <= 1 {
             if let Some(layer) = &self.layer_surface
@@ -190,7 +232,7 @@ impl LayerApp {
             .expect("cairo surface");
 
             let cr = cairo::Context::new(&surface).expect("cairo context");
-            draw::draw_with_signal(&cr, text, config, signal, draw_state);
+            draw::draw_with_signal(&cr, text, config, signal, draw_state, self.scale_factor);
             surface.flush();
         }
 
@@ -223,6 +265,7 @@ impl LayerApp {
 
 delegate_registry!(LayerApp);
 delegate_seat!(LayerApp);
+delegate_pointer!(LayerApp);
 delegate_output!(LayerApp);
 delegate_compositor!(LayerApp);
 delegate_shm!(LayerApp);
@@ -234,8 +277,11 @@ impl CompositorHandler for LayerApp {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         _surface: &wl_surface::WlSurface,
-        _new_factor: i32,
+        new_factor: i32,
     ) {
+        self.scale_factor = new_factor.max(1);
+        self.scale_changed = true;
+        eprintln!("Scale factor changed: {}", self.scale_factor);
     }
 
     fn transform_changed(
@@ -315,10 +361,21 @@ impl SeatHandler for LayerApp {
     fn new_capability(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _seat: wl_seat::WlSeat,
-        _capability: Capability,
+        qh: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+        capability: Capability,
     ) {
+        if capability == Capability::Pointer && self.pointer.is_none() {
+            match self.seat_state.get_pointer(qh, &seat) {
+                Ok(pointer) => {
+                    eprintln!("Pointer capability acquired");
+                    self.pointer = Some(pointer);
+                }
+                Err(e) => {
+                    eprintln!("Failed to get pointer: {}", e);
+                }
+            }
+        }
     }
 
     fn remove_capability(
@@ -326,11 +383,35 @@ impl SeatHandler for LayerApp {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         _seat: wl_seat::WlSeat,
-        _capability: Capability,
+        capability: Capability,
     ) {
+        if capability == Capability::Pointer {
+            self.pointer = None;
+        }
     }
 
     fn remove_seat(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _seat: wl_seat::WlSeat) {
+    }
+}
+
+impl PointerHandler for LayerApp {
+    fn pointer_frame(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _pointer: &wl_pointer::WlPointer,
+        events: &[smithay_client_toolkit::seat::pointer::PointerEvent],
+    ) {
+        for event in events {
+            if let smithay_client_toolkit::seat::pointer::PointerEventKind::Press {
+                button,
+                ..
+            } = &event.kind
+                && *button == 0x110 {
+                    eprintln!("Click detected, dismissing");
+                    self.clicked = true;
+                }
+        }
     }
 }
 
