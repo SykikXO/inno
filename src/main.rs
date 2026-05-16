@@ -249,6 +249,7 @@ async fn main() -> anyhow::Result<()> {
                 let old_scale = config.scale;
                 config = AppConfig::load();
                 eprintln!("inno: reloaded {} signals", config.signals.len());
+                app.frame_cache.clear();
                 animation_timer = Box::pin(tokio::time::sleep(Duration::from_micros(1_000_000 / config.fps.max(1))));
                 state.on_config_reload(&config);
                 if (config.scale - old_scale).abs() > 0.01 {
@@ -273,6 +274,7 @@ async fn main() -> anyhow::Result<()> {
                         eprintln!("DBus: Reload config");
                         config = AppConfig::load();
                         eprintln!("inno: reloaded {} signals", config.signals.len());
+                        app.frame_cache.clear();
                         state.on_config_reload(&config);
                     }
                 }

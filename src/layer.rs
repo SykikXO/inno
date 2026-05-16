@@ -2,6 +2,8 @@ use crate::config::AppConfig;
 use crate::config::Signal;
 use crate::draw;
 use crate::draw::DrawState;
+use cairo::FontSlant;
+use cairo::FontWeight;
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_layer, delegate_output, delegate_pointer, delegate_registry, delegate_seat,
@@ -25,6 +27,47 @@ use smithay_client_toolkit::{
     shm::{Shm, ShmHandler, slot::SlotPool},
 };
 
+#[derive(Clone, PartialEq, Debug)]
+struct RenderKey {
+    text: String,
+    signal_icon: String,
+    signal_icon_size: f64,
+    signal_color: (f64, f64, f64, f64),
+    font: String,
+    font_size: f64,
+    font_slant: FontSlant,
+    font_weight: FontWeight,
+    bg_color: (f64, f64, f64, f64),
+    text_color: (f64, f64, f64, f64),
+    border_radius: f64,
+    gradient: bool,
+    scale: f64,
+}
+
+pub struct FrameCache {
+    surface: Option<cairo::ImageSurface>,
+    key: Option<RenderKey>,
+    width: i32,
+    height: i32,
+}
+
+impl FrameCache {
+    fn new() -> Self {
+        Self { surface: None, key: None, width: 0, height: 0 }
+    }
+
+    pub fn clear(&mut self) {
+        self.surface = None;
+        self.key = None;
+        self.width = 0;
+        self.height = 0;
+    }
+
+    fn matches(&self, key: &RenderKey) -> bool {
+        self.key.as_ref().is_some_and(|k| k == key)
+    }
+}
+
 pub struct LayerApp {
     pub registry_state: RegistryState,
     pub seat_state: SeatState,
@@ -43,6 +86,7 @@ pub struct LayerApp {
     pub scale_changed: bool,
     pub pointer: Option<wl_pointer::WlPointer>,
     pub clicked: bool,
+    pub frame_cache: FrameCache,
 }
 
 impl LayerApp {
@@ -72,6 +116,7 @@ impl LayerApp {
             scale_changed: false,
             pointer: None,
             clicked: false,
+            frame_cache: FrameCache::new(),
         })
     }
 
@@ -156,12 +201,6 @@ impl LayerApp {
         }
     }
 
-    /// Draw text without signal (for DBus Show command)
-    pub fn draw_text(&mut self, text: &str, config: &AppConfig) {
-        let draw_state = DrawState::default();
-        self.draw_text_with_signal(text, config, None, &draw_state);
-    }
-
     pub fn draw_text_with_signal(
         &mut self,
         text: &str,
@@ -173,22 +212,54 @@ impl LayerApp {
             return;
         }
 
-        let (w, h) = draw::measure_text(text, config, signal, self.effective_scale(config));
-
-        if w <= 1 || h <= 1 {
-            if let Some(layer) = &self.layer_surface
-                && let Some(pool) = &mut self.pool
-                && let Ok((buffer, canvas)) = pool.create_buffer(1, 1, 4, wl_shm::Format::Argb8888)
-            {
-                for i in canvas.iter_mut() {
-                    *i = 0;
-                }
-                layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
-                layer.wl_surface().damage(0, 0, 1, 1);
-                layer.commit();
-            }
+        if signal.is_some_and(|s| s.animation == crate::config::Animation::Blink && !draw_state.visible) {
+            self.commit_clear();
             return;
         }
+
+        let scale = self.effective_scale(config);
+
+        let key = RenderKey {
+            text: text.to_string(),
+            signal_icon: signal.map(|s| s.icon.clone()).unwrap_or_default(),
+            signal_icon_size: signal.map(|s| s.icon_size).unwrap_or(0.0),
+            signal_color: signal.map(|s| s.color).unwrap_or(config.text_color),
+            font: config.font.clone(),
+            font_size: config.font_size,
+            font_slant: config.font_slant,
+            font_weight: config.font_weight,
+            bg_color: config.bg_color,
+            text_color: config.text_color,
+            border_radius: config.border_radius,
+            gradient: config.gradient,
+            scale,
+        };
+
+        if !self.frame_cache.matches(&key) {
+            let (w, h) = draw::measure_text(text, config, signal, scale);
+            if w <= 1 || h <= 1 {
+                self.frame_cache.clear();
+                self.commit_1x1();
+                return;
+            }
+            self.render_and_cache(text, config, signal, scale, key, w, h);
+        }
+
+        self.blit_cached(scale, draw_state);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_and_cache(
+        &mut self,
+        text: &str,
+        config: &AppConfig,
+        signal: Option<&Signal>,
+        scale: f64,
+        key: RenderKey,
+        w: i32,
+        h: i32,
+    ) {
+        self.frame_cache.clear();
 
         self.width = w as u32;
         self.height = h as u32;
@@ -235,9 +306,20 @@ impl LayerApp {
             )
             .expect("cairo surface");
 
+            let base_state = DrawState { frame: 0, visible: true, alpha: 1.0, offset_x: 0.0, offset_y: 0.0 };
             let cr = cairo::Context::new(&surface).expect("cairo context");
-            draw::draw_with_signal(&cr, text, config, signal, draw_state, self.effective_scale(config));
+            draw::draw_with_signal(&cr, text, config, signal, &base_state, scale);
             surface.flush();
+
+            let cached = cairo::ImageSurface::create(cairo::Format::ARgb32, w, h).unwrap();
+            let cr_cache = cairo::Context::new(&cached).unwrap();
+            cr_cache.set_source_surface(&surface, 0.0, 0.0).unwrap();
+            cr_cache.paint().unwrap();
+
+            self.frame_cache.surface = Some(cached);
+            self.frame_cache.key = Some(key);
+            self.frame_cache.width = w;
+            self.frame_cache.height = h;
         }
 
         let layer = self.layer_surface.as_ref().unwrap();
@@ -245,6 +327,107 @@ impl LayerApp {
         layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
         layer.wl_surface().damage(0, 0, self.width as i32, self.height as i32);
         layer.commit();
+    }
+
+    fn blit_cached(&mut self, scale: f64, draw_state: &DrawState) {
+        let cached = self.frame_cache.surface.as_ref().unwrap();
+        let w = self.frame_cache.width;
+        let h = self.frame_cache.height;
+
+        self.width = w as u32;
+        self.height = h as u32;
+
+        let stride = w * 4;
+        let needed = (w * h * 4) as usize;
+
+        match &mut self.pool {
+            None => {
+                self.pool =
+                    Some(SlotPool::new(needed, &self.shm_state).expect("Failed to create pool"));
+            }
+            Some(pool) => {
+                if pool.len() < needed {
+                    self.pool = Some(
+                        SlotPool::new(needed, &self.shm_state).expect("Failed to resize pool"),
+                    );
+                }
+            }
+        }
+
+        let (buffer, canvas) = {
+            let pool = self.pool.as_mut().unwrap();
+            pool.create_buffer(w, h, stride, wl_shm::Format::Argb8888)
+                .expect("create buffer")
+        };
+
+        unsafe {
+            let ptr = canvas.as_ptr() as *mut u8;
+            let len = canvas.len();
+            let canvas_slice = std::slice::from_raw_parts_mut(ptr, len);
+
+            for b in canvas_slice.iter_mut() {
+                *b = 0;
+            }
+
+            let surface = cairo::ImageSurface::create_for_data(
+                canvas_slice,
+                cairo::Format::ARgb32,
+                w,
+                h,
+                stride,
+            )
+            .expect("cairo surface");
+
+            let cr = cairo::Context::new(&surface).expect("cairo context");
+            cr.set_source_surface(cached, draw_state.offset_x * scale, draw_state.offset_y * scale).unwrap();
+            cr.paint_with_alpha(draw_state.alpha).unwrap();
+            surface.flush();
+        }
+
+        let layer = self.layer_surface.as_ref().unwrap();
+        layer.set_size(self.width, self.height);
+        layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
+        layer.wl_surface().damage(0, 0, w, h);
+        layer.commit();
+    }
+
+    fn commit_clear(&mut self) {
+        if let Some(layer) = &self.layer_surface {
+            self.width = 1;
+            self.height = 1;
+            layer.set_size(1, 1);
+
+            if let Some(pool) = &mut self.pool
+                && let Ok((buffer, canvas)) = pool.create_buffer(1, 1, 4, wl_shm::Format::Argb8888)
+            {
+                for i in canvas.iter_mut() {
+                    *i = 0;
+                }
+                layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
+                layer.wl_surface().damage(0, 0, 1, 1);
+                layer.commit();
+            }
+        }
+    }
+
+    fn commit_1x1(&mut self) {
+        if let Some(layer) = &self.layer_surface
+            && let Some(pool) = &mut self.pool
+            && let Ok((buffer, canvas)) = pool.create_buffer(1, 1, 4, wl_shm::Format::Argb8888)
+        {
+            for i in canvas.iter_mut() {
+                *i = 0;
+            }
+            layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
+            layer.wl_surface().damage(0, 0, 1, 1);
+            layer.commit();
+        }
+    }
+
+    /// Draw text without signal (for DBus Show command)
+    pub fn draw_text(&mut self, text: &str, config: &AppConfig) {
+        let draw_state = DrawState::default();
+        self.draw_text_with_signal(text, config, None, &draw_state);
     }
 
     pub fn hide(&mut self) {
@@ -452,4 +635,142 @@ impl ProvidesRegistryState for LayerApp {
     }
 
     registry_handlers![OutputState, SeatState];
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_render_key_equality() {
+        let key1 = RenderKey {
+            text: "test".into(),
+            signal_icon: "icon".into(),
+            signal_icon_size: 24.0,
+            signal_color: (1.0, 1.0, 1.0, 1.0),
+            font: "monospace".into(),
+            font_size: 24.0,
+            font_slant: FontSlant::Normal,
+            font_weight: FontWeight::Normal,
+            bg_color: (0.0, 0.0, 0.0, 0.6),
+            text_color: (1.0, 1.0, 1.0, 1.0),
+            border_radius: 0.0,
+            gradient: false,
+            scale: 1.0,
+        };
+        let key2 = key1.clone();
+        assert_eq!(key1, key2);
+    }
+
+    #[test]
+    fn test_render_key_differs_on_text() {
+        let key1 = RenderKey {
+            text: "test".into(),
+            signal_icon: String::new(),
+            signal_icon_size: 0.0,
+            signal_color: (1.0, 1.0, 1.0, 1.0),
+            font: "monospace".into(),
+            font_size: 24.0,
+            font_slant: FontSlant::Normal,
+            font_weight: FontWeight::Normal,
+            bg_color: (0.0, 0.0, 0.0, 0.6),
+            text_color: (1.0, 1.0, 1.0, 1.0),
+            border_radius: 0.0,
+            gradient: false,
+            scale: 1.0,
+        };
+        let key2 = RenderKey { text: "other".into(), ..key1.clone() };
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn test_render_key_differs_on_scale() {
+        let key1 = RenderKey {
+            text: "test".into(),
+            signal_icon: String::new(),
+            signal_icon_size: 0.0,
+            signal_color: (1.0, 1.0, 1.0, 1.0),
+            font: "monospace".into(),
+            font_size: 24.0,
+            font_slant: FontSlant::Normal,
+            font_weight: FontWeight::Normal,
+            bg_color: (0.0, 0.0, 0.0, 0.6),
+            text_color: (1.0, 1.0, 1.0, 1.0),
+            border_radius: 0.0,
+            gradient: false,
+            scale: 1.0,
+        };
+        let key2 = RenderKey { scale: 2.0, ..key1.clone() };
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn test_frame_cache_empty_initially() {
+        let cache = FrameCache::new();
+        assert!(cache.key.is_none());
+        assert!(cache.surface.is_none());
+        assert_eq!(cache.width, 0);
+        assert_eq!(cache.height, 0);
+    }
+
+    #[test]
+    fn test_frame_cache_clear() {
+        let key = RenderKey {
+            text: "test".into(),
+            signal_icon: String::new(),
+            signal_icon_size: 0.0,
+            signal_color: (1.0, 1.0, 1.0, 1.0),
+            font: "monospace".into(),
+            font_size: 24.0,
+            font_slant: FontSlant::Normal,
+            font_weight: FontWeight::Normal,
+            bg_color: (0.0, 0.0, 0.0, 0.6),
+            text_color: (1.0, 1.0, 1.0, 1.0),
+            border_radius: 0.0,
+            gradient: false,
+            scale: 1.0,
+        };
+        let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 10, 10).unwrap();
+        let mut cache = FrameCache {
+            surface: Some(surface),
+            key: Some(key),
+            width: 10,
+            height: 10,
+        };
+        cache.clear();
+        assert!(cache.key.is_none());
+        assert!(cache.surface.is_none());
+        assert_eq!(cache.width, 0);
+        assert_eq!(cache.height, 0);
+    }
+
+    #[test]
+    fn test_frame_cache_matches() {
+        let key = RenderKey {
+            text: "test".into(),
+            signal_icon: String::new(),
+            signal_icon_size: 0.0,
+            signal_color: (1.0, 1.0, 1.0, 1.0),
+            font: "monospace".into(),
+            font_size: 24.0,
+            font_slant: FontSlant::Normal,
+            font_weight: FontWeight::Normal,
+            bg_color: (0.0, 0.0, 0.0, 0.6),
+            text_color: (1.0, 1.0, 1.0, 1.0),
+            border_radius: 0.0,
+            gradient: false,
+            scale: 1.0,
+        };
+        let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 10, 10).unwrap();
+        let cache = FrameCache {
+            surface: Some(surface),
+            key: Some(key.clone()),
+            width: 10,
+            height: 10,
+        };
+        assert!(cache.matches(&key));
+
+        let different_key = RenderKey { text: "other".into(), ..key };
+        assert!(!cache.matches(&different_key));
+    }
 }
