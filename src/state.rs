@@ -49,7 +49,7 @@ impl NotificationState {
         notify_event: &NotifyEvent,
         battery_percentage: &Arc<AtomicU32>,
         battery_state_shared: &Arc<RwLock<String>>,
-    ) -> bool {
+    ) -> Option<std::time::Duration> {
         let is_battery = is_battery_event(&notify_event.event_name, &notify_event.path);
 
         let (pct_for_match, state) = if is_battery {
@@ -84,34 +84,47 @@ impl NotificationState {
         let signal = sig_idx.map(|i| &config.signals[i]);
         let signal_msg = signal.map(|s| s.message.clone());
 
-        let state_key = format!("{}:{}", notify_event.event_name, notify_event.path);
-        let prev_s = self.prev_state.get(&state_key).unwrap_or(&None);
-        let state_changed = prev_s.as_ref() != Some(&state);
-
-        let prev_sig = self.prev_signal_msg.get(&state_key).unwrap_or(&None);
-        let signal_changed = prev_sig != &signal_msg;
-
-        let agg_changed = if is_battery {
+        let should_notify = if is_battery {
             let current_agg = (pct_for_match, state.clone());
             let changed = self.prev_battery_agg.as_ref() != Some(&current_agg);
             self.prev_battery_agg = Some(current_agg);
             changed
         } else {
-            true
+            let state_key = format!("{}:{}", notify_event.event_name, notify_event.path);
+            let prev_s = self.prev_state.get(&state_key).unwrap_or(&None);
+            let prev_sig = self.prev_signal_msg.get(&state_key).unwrap_or(&None);
+            let state_changed = prev_s.as_ref() != Some(&state);
+            let signal_changed = prev_sig != &signal_msg;
+
+            if state_changed || signal_changed {
+                if self.prev_state.contains_key(&state_key) {
+                    self.prev_state.insert(state_key.clone(), Some(state));
+                    self.prev_signal_msg.insert(state_key, signal_msg);
+                } else {
+                    if self.state_key_order.len() >= MAX_STATE_ENTRIES
+                        && let Some(oldest) = self.state_key_order.pop_front()
+                    {
+                        self.prev_state.remove(&oldest);
+                        self.prev_signal_msg.remove(&oldest);
+                    }
+                    self.state_key_order.push_back(state_key.clone());
+                    self.prev_state.insert(state_key.clone(), Some(state));
+                    self.prev_signal_msg.insert(state_key, signal_msg);
+                }
+            }
+
+            state_changed || signal_changed
         };
 
-        if (state_changed || signal_changed) && agg_changed {
+        if should_notify {
             if let Some(p) = notify_event.percentage {
                 if is_battery {
-                    println!("Notify (agg): {:.0}% {} (state={}, signal={})",
-                        pct_for_match, notify_event.event_name, state_changed, signal_changed);
+                    println!("Notify (agg): {:.0}% {}", pct_for_match, notify_event.event_name);
                 } else {
-                    println!("Notify: {:.0}% {} ({}) (state={}, signal={})",
-                        p, notify_event.event_name, notify_event.path, state_changed, signal_changed);
+                    println!("Notify: {:.0}% {} ({})", p, notify_event.event_name, notify_event.path);
                 }
             } else {
-                println!("Notify: {} ({}) (state={}, signal={})",
-                    notify_event.event_name, notify_event.path, state_changed, signal_changed);
+                println!("Notify: {} ({})", notify_event.event_name, notify_event.path);
             }
 
             if let Some(sig) = signal {
@@ -125,28 +138,12 @@ impl NotificationState {
                         self.notify_queue.push_back(notify_event.clone());
                     }
                 } else {
-                    self.show_notification(app, config, sound_worker, sig, sig_idx, notify_event, pct_for_match);
+                    return Some(self.show_notification(app, config, sound_worker, sig, sig_idx, notify_event, pct_for_match));
                 }
             }
         }
 
-        // Track state with bounded growth
-        if self.prev_state.contains_key(&state_key) {
-            self.prev_state.insert(state_key.clone(), Some(state));
-            self.prev_signal_msg.insert(state_key, signal_msg);
-        } else {
-            if self.state_key_order.len() >= MAX_STATE_ENTRIES
-                && let Some(oldest) = self.state_key_order.pop_front()
-            {
-                self.prev_state.remove(&oldest);
-                self.prev_signal_msg.remove(&oldest);
-            }
-            self.state_key_order.push_back(state_key.clone());
-            self.prev_state.insert(state_key.clone(), Some(state));
-            self.prev_signal_msg.insert(state_key, signal_msg);
-        }
-
-        true
+        None
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -196,7 +193,7 @@ impl NotificationState {
         self.animating = false;
         self.draw_state.reset();
 
-        if let Some(queued_event) = self.notify_queue.pop_front() {
+        while let Some(queued_event) = self.notify_queue.pop_front() {
             let pct = queued_event.percentage.unwrap_or(100.0);
             let state = queued_event.state.clone().unwrap_or_else(|| "unknown".to_string());
             let sig_idx = config.find_signal_idx(pct, &state);
