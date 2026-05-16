@@ -1,8 +1,7 @@
-use std::fs::File;
-use std::io::BufReader;
 use std::path::PathBuf;
+use std::process::Command;
 
-/// Channel-backed sound worker — single thread, single OutputStream
+/// Channel-backed sound worker — single thread, uses paplay for reliable PipeWire routing
 pub struct SoundWorker {
     tx: Option<std::sync::mpsc::Sender<PathBuf>>,
     _handle: Option<std::thread::JoinHandle<()>>,
@@ -12,34 +11,30 @@ impl SoundWorker {
     pub fn new() -> Self {
         let (tx, rx) = std::sync::mpsc::channel::<PathBuf>();
 
-        let handle = std::thread::spawn(move || {
-            let Ok((stream, stream_handle)) = rodio::OutputStream::try_default() else {
-                eprintln!("Sound: failed to create OutputStream");
-                return;
-            };
-            let sink = match rodio::Sink::try_new(&stream_handle) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("Sound: failed to create Sink: {}", e);
-                    return;
-                }
-            };
-            let _stream = stream;
-
-            while let Ok(path) = rx.recv() {
-                if !path.exists() {
-                    eprintln!("Sound file not found: {:?}", path);
-                    continue;
-                }
-                if let Ok(file) = File::open(&path) {
-                    let reader = BufReader::new(file);
-                    if let Ok(source) = rodio::Decoder::new(reader) {
-                        sink.append(source);
-                        sink.sleep_until_end();
+        let handle = std::thread::Builder::new()
+            .name("sound-worker".into())
+            .spawn(move || {
+                while let Ok(path) = rx.recv() {
+                    if !path.exists() {
+                        eprintln!("Sound: file not found: {:?}", path);
+                        continue;
+                    }
+                    match Command::new("paplay")
+                        .arg("--volume=65536")
+                        .arg(&path)
+                        .output()
+                    {
+                        Ok(out) => {
+                            if !out.status.success() {
+                                let stderr = String::from_utf8_lossy(&out.stderr);
+                                eprintln!("Sound: paplay failed: {}", stderr);
+                            }
+                        }
+                        Err(e) => eprintln!("Sound: paplay error: {}", e),
                     }
                 }
-            }
-        });
+            })
+            .expect("Failed to spawn sound thread");
 
         Self {
             tx: Some(tx),
