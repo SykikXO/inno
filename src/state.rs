@@ -19,7 +19,7 @@ pub struct NotificationState {
     pub current_signal_idx: Option<usize>,
     pub notify_queue: VecDeque<NotifyEvent>,
     pub battery_devices: HashMap<String, (f64, String)>,
-    pub prev_battery_agg: Option<(f64, String)>,
+    pub prev_battery_agg: Option<String>,
     pub prev_state: HashMap<String, Option<String>>,
     pub prev_signal_msg: HashMap<String, Option<String>>,
     pub state_key_order: VecDeque<String>,
@@ -85,9 +85,8 @@ impl NotificationState {
         let signal_msg = signal.map(|s| s.message.clone());
 
         let should_notify = if is_battery {
-            let current_agg = (pct_for_match, state.clone());
-            let changed = self.prev_battery_agg.as_ref() != Some(&current_agg);
-            self.prev_battery_agg = Some(current_agg);
+            let changed = self.prev_battery_agg.as_ref().map(|s| s != &state).unwrap_or(true);
+            self.prev_battery_agg = Some(state.clone());
             changed
         } else {
             let state_key = format!("{}:{}", notify_event.event_name, notify_event.path);
@@ -117,12 +116,10 @@ impl NotificationState {
         };
 
         if should_notify {
-            if let Some(p) = notify_event.percentage {
-                if is_battery {
-                    println!("Notify (agg): {:.0}% {}", pct_for_match, notify_event.event_name);
-                } else {
-                    println!("Notify: {:.0}% {} ({})", p, notify_event.event_name, notify_event.path);
-                }
+            if is_battery {
+                println!("Notify (state change): {} {}", self.prev_battery_agg.as_ref().unwrap(), notify_event.event_name);
+            } else if let Some(p) = notify_event.percentage {
+                println!("Notify: {:.0}% {} ({})", p, notify_event.event_name, notify_event.path);
             } else {
                 println!("Notify: {} ({})", notify_event.event_name, notify_event.path);
             }
