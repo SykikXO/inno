@@ -131,8 +131,7 @@ pub fn format_text(fmt: &str, icon: &str, message: &str, percent: Option<f64>) -
 }
 
 /// Measure text and icon dimensions without rendering
-pub fn measure_text(text: &str, config: &AppConfig, signal: Option<&Signal>, scale: i32) -> (i32, i32) {
-    let scale = scale as f64;
+pub fn measure_text(text: &str, config: &AppConfig, signal: Option<&Signal>, scale: f64) -> (i32, i32) {
     let dummy = cairo::ImageSurface::create(cairo::Format::ARgb32, 1, 1).unwrap();
     let cr = cairo::Context::new(&dummy).unwrap();
 
@@ -162,9 +161,8 @@ pub fn draw_with_signal(
     config: &AppConfig,
     signal: Option<&Signal>,
     state: &DrawState,
-    scale: i32,
+    scale: f64,
 ) -> (i32, i32) {
-    let scale = scale as f64;
     let (r_bg, g_bg, b_bg, a_bg) = config.bg_color;
     let (r, g, b, a) = signal.map(|s| s.color).unwrap_or(config.text_color);
 

@@ -246,10 +246,15 @@ async fn main() -> anyhow::Result<()> {
         tokio::select! {
             Some(()) = config_rx.recv() => {
                 eprintln!("Config file changed, reloading...");
+                let old_scale = config.scale;
                 config = AppConfig::load();
                 eprintln!("inno: reloaded {} signals", config.signals.len());
                 animation_timer = Box::pin(tokio::time::sleep(Duration::from_micros(1_000_000 / config.fps.max(1))));
                 state.on_config_reload(&config);
+                if (config.scale - old_scale).abs() > 0.01 {
+                    eprintln!("Scale changed, redrawing...");
+                    app.scale_changed = true;
+                }
             }
 
             Some(control_event) = control_rx.recv() => {

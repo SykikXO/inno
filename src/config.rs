@@ -40,6 +40,7 @@ struct GeneralConfig {
     output: Option<String>,
     battery_mode: Option<String>,
     fps: Option<u64>,
+    scale: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -170,6 +171,7 @@ pub struct AppConfig {
     pub output: OutputMode,
     pub battery_mode: BatteryMode,
     pub fps: u64,
+    pub scale: f64,
     pub config_path: Option<PathBuf>,
 }
 
@@ -190,6 +192,7 @@ impl Default for AppConfig {
             output: OutputMode::Primary,
             battery_mode: BatteryMode::First,
             fps: 30,
+            scale: 1.0,
             config_path: None,
         }
     }
@@ -307,6 +310,9 @@ impl AppConfig {
             if let Some(fps) = general.fps {
                 self.fps = fps;
             }
+            if let Some(s) = general.scale {
+                self.scale = s.max(0.1);
+            }
         }
 
         // Appearance settings
@@ -414,6 +420,12 @@ impl AppConfig {
             errors.push("fps must be > 0".to_string());
         } else if self.fps > 120 {
             warnings.push(format!("fps={} is unusually high", self.fps));
+        }
+
+        if self.scale < 0.1 {
+            errors.push("scale must be >= 0.1".to_string());
+        } else if self.scale > 5.0 {
+            warnings.push(format!("scale={} is very large", self.scale));
         }
 
         if self.font_size < 1.0 {
@@ -685,5 +697,53 @@ mod tests {
         };
         let (errors, _) = cfg.validate();
         assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_validate_scale_too_small() {
+        let cfg = AppConfig {
+            scale: 0.05,
+            signals: vec![Signal {
+                message: "test".into(),
+                icon: "".into(),
+                icon_size: 24.0,
+                color: (1.0, 1.0, 1.0, 1.0),
+                threshold: 50.0,
+                state_filter: "any".into(),
+                animation: Animation::None,
+                duration: 5,
+                sound: None,
+            }],
+            ..Default::default()
+        };
+        let (errors, _) = cfg.validate();
+        assert!(errors.iter().any(|e| e.contains("scale")));
+    }
+
+    #[test]
+    fn test_validate_scale_too_large() {
+        let cfg = AppConfig {
+            scale: 6.0,
+            signals: vec![Signal {
+                message: "test".into(),
+                icon: "".into(),
+                icon_size: 24.0,
+                color: (1.0, 1.0, 1.0, 1.0),
+                threshold: 50.0,
+                state_filter: "any".into(),
+                animation: Animation::None,
+                duration: 5,
+                sound: None,
+            }],
+            ..Default::default()
+        };
+        let (_, warnings) = cfg.validate();
+        assert!(warnings.iter().any(|w| w.contains("scale")));
+    }
+
+    #[test]
+    fn test_default_scale_is_one() {
+        let cfg = AppConfig::default();
+        assert!((cfg.scale - 1.0).abs() < f64::EPSILON);
     }
 }

@@ -125,12 +125,12 @@ impl LayerApp {
         }
 
         layer.set_anchor(anchor);
-        let s = self.scale_factor;
+        let s = self.effective_scale(config);
         layer.set_margin(
-            (config.anchor.margin_v + config.anchor.offset_y) * s,
-            (config.anchor.margin_h + config.anchor.offset_x) * s,
-            (config.anchor.margin_v - config.anchor.offset_y) * s,
-            (config.anchor.margin_h - config.anchor.offset_x) * s,
+            ((config.anchor.margin_v + config.anchor.offset_y) as f64 * s) as i32,
+            ((config.anchor.margin_h + config.anchor.offset_x) as f64 * s) as i32,
+            ((config.anchor.margin_v - config.anchor.offset_y) as f64 * s) as i32,
+            ((config.anchor.margin_h - config.anchor.offset_x) as f64 * s) as i32,
         );
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         layer.set_size(1, 1);
@@ -139,14 +139,18 @@ impl LayerApp {
         self.layer_surface = Some(layer);
     }
 
+    fn effective_scale(&self, config: &AppConfig) -> f64 {
+        config.scale * self.scale_factor as f64
+    }
+
     pub fn update_scale_margins(&mut self, config: &AppConfig) {
         if let Some(layer) = &self.layer_surface {
-            let s = self.scale_factor;
+            let s = self.effective_scale(config);
             layer.set_margin(
-                (config.anchor.margin_v + config.anchor.offset_y) * s,
-                (config.anchor.margin_h + config.anchor.offset_x) * s,
-                (config.anchor.margin_v - config.anchor.offset_y) * s,
-                (config.anchor.margin_h - config.anchor.offset_x) * s,
+                ((config.anchor.margin_v + config.anchor.offset_y) as f64 * s) as i32,
+                ((config.anchor.margin_h + config.anchor.offset_x) as f64 * s) as i32,
+                ((config.anchor.margin_v - config.anchor.offset_y) as f64 * s) as i32,
+                ((config.anchor.margin_h - config.anchor.offset_x) as f64 * s) as i32,
             );
             layer.commit();
         }
@@ -169,7 +173,7 @@ impl LayerApp {
             return;
         }
 
-        let (w, h) = draw::measure_text(text, config, signal, self.scale_factor);
+        let (w, h) = draw::measure_text(text, config, signal, self.effective_scale(config));
 
         if w <= 1 || h <= 1 {
             if let Some(layer) = &self.layer_surface
@@ -232,7 +236,7 @@ impl LayerApp {
             .expect("cairo surface");
 
             let cr = cairo::Context::new(&surface).expect("cairo context");
-            draw::draw_with_signal(&cr, text, config, signal, draw_state, self.scale_factor);
+            draw::draw_with_signal(&cr, text, config, signal, draw_state, self.effective_scale(config));
             surface.flush();
         }
 
