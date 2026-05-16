@@ -5,6 +5,7 @@ pub enum Action {
     Version,
     Daemon,
     InternalDaemon,
+    CheckConfig,
 }
 
 pub struct Args {
@@ -30,6 +31,7 @@ OPTIONS:
     --no-dbus               Disable DBus control interface
     --test <number>         Preview specific animation (1-6)
     --test-animations       Cycle through all animations for testing
+    --check-config          Validate config and exit
 
 CONFIG:
     ~/.config/inno/inno.toml   (main config)
@@ -49,6 +51,7 @@ pub fn parse() -> Args {
     let mut log_file: Option<PathBuf> = None;
     let mut test_animation: Option<usize> = None;
     let mut test_all_animations = false;
+    let mut check_config = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -93,12 +96,19 @@ pub fn parse() -> Args {
                 test_all_animations = true;
                 debug_mode = true;
             }
+            "--check-config" => {
+                check_config = true;
+            }
             _ => {}
         }
         i += 1;
     }
 
-    let action = action.unwrap_or(Action::InternalDaemon);
+    let action = if check_config {
+        Action::CheckConfig
+    } else {
+        action.unwrap_or(Action::InternalDaemon)
+    };
 
     if test_animation.is_some() {
         test_all_animations = false;

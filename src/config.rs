@@ -377,4 +377,313 @@ impl AppConfig {
 
         best_idx
     }
+
+    /// Validate config and return list of warnings/errors
+    pub fn validate(&self) -> (Vec<String>, Vec<String>) {
+        let mut errors = Vec::new();
+        let mut warnings = Vec::new();
+
+        if self.signals.is_empty() {
+            errors.push("No signals defined in config".to_string());
+        }
+
+        for (i, sig) in self.signals.iter().enumerate() {
+            if sig.message.is_empty() {
+                errors.push(format!("signal[{}]: message is empty", i));
+            }
+            if sig.duration == 0 {
+                errors.push(format!("signal[{}]: duration must be > 0", i));
+            }
+            if sig.threshold < 0.0 || sig.threshold > 100.0 {
+                errors.push(format!("signal[{}]: threshold {} out of range 0-100", i, sig.threshold));
+            }
+            if sig.icon_size < 1.0 {
+                warnings.push(format!("signal[{}]: icon_size {} is very small", i, sig.icon_size));
+            }
+            let (r, g, b, a) = sig.color;
+            if !(0.0..=1.0).contains(&r) || !(0.0..=1.0).contains(&g) || !(0.0..=1.0).contains(&b) || !(0.0..=1.0).contains(&a) {
+                errors.push(format!("signal[{}]: color values must be 0.0-1.0", i));
+            }
+            if let Some(ref sound_path) = sig.sound
+                && !sound_path.exists() {
+                    warnings.push(format!("signal[{}]: sound file not found: {:?}", i, sound_path));
+                }
+        }
+
+        if self.fps == 0 {
+            errors.push("fps must be > 0".to_string());
+        } else if self.fps > 120 {
+            warnings.push(format!("fps={} is unusually high", self.fps));
+        }
+
+        if self.font_size < 1.0 {
+            errors.push("font_size must be >= 1.0".to_string());
+        }
+
+        let (r, g, b, a) = self.bg_color;
+        if !(0.0..=1.0).contains(&r) || !(0.0..=1.0).contains(&g) || !(0.0..=1.0).contains(&b) || !(0.0..=1.0).contains(&a) {
+            errors.push("bg_color values must be 0.0-1.0".to_string());
+        }
+
+        let (r, g, b, a) = self.text_color;
+        if !(0.0..=1.0).contains(&r) || !(0.0..=1.0).contains(&g) || !(0.0..=1.0).contains(&b) || !(0.0..=1.0).contains(&a) {
+            errors.push("text_color values must be 0.0-1.0".to_string());
+        }
+
+        if self.format.is_empty() {
+            warnings.push("format string is empty".to_string());
+        }
+
+        if self.config_path.is_none() {
+            warnings.push("No config file found, using defaults".to_string());
+        }
+
+        (errors, warnings)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_anchor_parse_full() {
+        let a = Anchor::parse("center,bottom,10,20,5,-15");
+        assert!(matches!(a.h, HAnchor::Center));
+        assert!(matches!(a.v, VAnchor::Bottom));
+        assert_eq!(a.margin_h, 10);
+        assert_eq!(a.margin_v, 20);
+        assert_eq!(a.offset_x, 5);
+        assert_eq!(a.offset_y, -15);
+    }
+
+    #[test]
+    fn test_anchor_parse_minimal() {
+        let a = Anchor::parse("left,top");
+        assert!(matches!(a.h, HAnchor::Left));
+        assert!(matches!(a.v, VAnchor::Top));
+        assert_eq!(a.margin_h, DEFAULT_MARGIN);
+        assert_eq!(a.margin_v, DEFAULT_MARGIN);
+        assert_eq!(a.offset_x, 0);
+        assert_eq!(a.offset_y, 0);
+    }
+
+    #[test]
+    fn test_anchor_parse_right_bottom() {
+        let a = Anchor::parse("right,bottom,50");
+        assert!(matches!(a.h, HAnchor::Right));
+        assert!(matches!(a.v, VAnchor::Bottom));
+        assert_eq!(a.margin_h, 50);
+        assert_eq!(a.margin_v, 50);
+    }
+
+    #[test]
+    fn test_anchor_parse_defaults() {
+        let a = Anchor::parse("");
+        assert!(matches!(a.h, HAnchor::Center));
+        assert!(matches!(a.v, VAnchor::Bottom));
+    }
+
+    #[test]
+    fn test_find_signal_idx_charging() {
+        let cfg = AppConfig {
+            signals: vec![
+                Signal {
+                    message: "low".into(),
+                    icon: "".into(),
+                    icon_size: 24.0,
+                    color: (1.0, 0.0, 0.0, 1.0),
+                    threshold: 20.0,
+                    state_filter: "charging".into(),
+                    animation: Animation::None,
+                    duration: 5,
+                    sound: None,
+                },
+                Signal {
+                    message: "mid".into(),
+                    icon: "".into(),
+                    icon_size: 24.0,
+                    color: (1.0, 1.0, 0.0, 1.0),
+                    threshold: 50.0,
+                    state_filter: "charging".into(),
+                    animation: Animation::None,
+                    duration: 5,
+                    sound: None,
+                },
+                Signal {
+                    message: "high".into(),
+                    icon: "".into(),
+                    icon_size: 24.0,
+                    color: (0.0, 1.0, 0.0, 1.0),
+                    threshold: 80.0,
+                    state_filter: "charging".into(),
+                    animation: Animation::None,
+                    duration: 5,
+                    sound: None,
+                },
+            ],
+            ..Default::default()
+        };
+
+        assert_eq!(cfg.find_signal_idx(15.0, "charging"), None);
+        assert_eq!(cfg.find_signal_idx(25.0, "charging"), Some(0));
+        assert_eq!(cfg.find_signal_idx(60.0, "charging"), Some(1));
+        assert_eq!(cfg.find_signal_idx(90.0, "charging"), Some(2));
+    }
+
+    #[test]
+    fn test_find_signal_idx_discharging() {
+        let cfg = AppConfig {
+            signals: vec![
+                Signal {
+                    message: "critical".into(),
+                    icon: "".into(),
+                    icon_size: 24.0,
+                    color: (1.0, 0.0, 0.0, 1.0),
+                    threshold: 10.0,
+                    state_filter: "discharging".into(),
+                    animation: Animation::None,
+                    duration: 5,
+                    sound: None,
+                },
+                Signal {
+                    message: "low".into(),
+                    icon: "".into(),
+                    icon_size: 24.0,
+                    color: (1.0, 1.0, 0.0, 1.0),
+                    threshold: 30.0,
+                    state_filter: "discharging".into(),
+                    animation: Animation::None,
+                    duration: 5,
+                    sound: None,
+                },
+            ],
+            ..Default::default()
+        };
+
+        assert_eq!(cfg.find_signal_idx(5.0, "discharging"), Some(0));
+        assert_eq!(cfg.find_signal_idx(20.0, "discharging"), Some(1));
+        assert_eq!(cfg.find_signal_idx(50.0, "discharging"), None);
+    }
+
+    #[test]
+    fn test_find_signal_idx_any_state() {
+        let cfg = AppConfig {
+            signals: vec![Signal {
+                message: "any".into(),
+                icon: "".into(),
+                icon_size: 24.0,
+                color: (1.0, 1.0, 1.0, 1.0),
+                threshold: 50.0,
+                state_filter: "any".into(),
+                animation: Animation::None,
+                duration: 5,
+                sound: None,
+            }],
+            ..Default::default()
+        };
+
+        assert!(cfg.find_signal_idx(60.0, "charging").is_some());
+        assert!(cfg.find_signal_idx(40.0, "discharging").is_some());
+        assert!(cfg.find_signal_idx(50.0, "full").is_some());
+    }
+
+    #[test]
+    fn test_parse_animation() {
+        assert!(matches!(parse_animation("blink"), Animation::Blink));
+        assert!(matches!(parse_animation("flicker"), Animation::Blink));
+        assert!(matches!(parse_animation("pulse"), Animation::Pulse));
+        assert!(matches!(parse_animation("fade"), Animation::Fade));
+        assert!(matches!(parse_animation("fade-in"), Animation::Fade));
+        assert!(matches!(parse_animation("slide-right"), Animation::SlideRight));
+        assert!(matches!(parse_animation("slide-left"), Animation::SlideLeft));
+        assert!(matches!(parse_animation("bounce"), Animation::Bounce));
+        assert!(matches!(parse_animation("none"), Animation::None));
+        assert!(matches!(parse_animation("invalid"), Animation::None));
+    }
+
+    #[test]
+    fn test_parse_output_mode() {
+        assert!(matches!(parse_output_mode("all"), OutputMode::All));
+        assert!(matches!(parse_output_mode("primary"), OutputMode::Primary));
+        assert!(matches!(parse_output_mode("HDMI-A-1"), OutputMode::Named(s) if s == "HDMI-A-1"));
+    }
+
+    #[test]
+    fn test_parse_battery_mode() {
+        assert!(matches!(parse_battery_mode("combined"), BatteryMode::Combined));
+        assert!(matches!(parse_battery_mode("highest"), BatteryMode::Highest));
+        assert!(matches!(parse_battery_mode("lowest"), BatteryMode::Lowest));
+        assert!(matches!(parse_battery_mode("first"), BatteryMode::First));
+        assert!(matches!(parse_battery_mode("invalid"), BatteryMode::First));
+    }
+
+    #[test]
+    fn test_validate_empty_signals() {
+        let cfg = AppConfig::default();
+        let (errors, _warnings) = cfg.validate();
+        assert!(errors.iter().any(|e| e.contains("No signals")));
+    }
+
+    #[test]
+    fn test_validate_invalid_color() {
+        let cfg = AppConfig {
+            signals: vec![Signal {
+                message: "test".into(),
+                icon: "".into(),
+                icon_size: 24.0,
+                color: (1.5, 0.0, 0.0, 1.0),
+                threshold: 50.0,
+                state_filter: "any".into(),
+                animation: Animation::None,
+                duration: 5,
+                sound: None,
+            }],
+            ..Default::default()
+        };
+        let (errors, _) = cfg.validate();
+        assert!(errors.iter().any(|e| e.contains("color")));
+    }
+
+    #[test]
+    fn test_validate_zero_duration() {
+        let cfg = AppConfig {
+            signals: vec![Signal {
+                message: "test".into(),
+                icon: "".into(),
+                icon_size: 24.0,
+                color: (1.0, 1.0, 1.0, 1.0),
+                threshold: 50.0,
+                state_filter: "any".into(),
+                animation: Animation::None,
+                duration: 0,
+                sound: None,
+            }],
+            ..Default::default()
+        };
+        let (errors, _) = cfg.validate();
+        assert!(errors.iter().any(|e| e.contains("duration")));
+    }
+
+    #[test]
+    fn test_validate_valid_config() {
+        let cfg = AppConfig {
+            signals: vec![Signal {
+                message: "test".into(),
+                icon: "".into(),
+                icon_size: 24.0,
+                color: (1.0, 1.0, 1.0, 1.0),
+                threshold: 50.0,
+                state_filter: "any".into(),
+                animation: Animation::None,
+                duration: 5,
+                sound: None,
+            }],
+            fps: 30,
+            font_size: 24.0,
+            ..Default::default()
+        };
+        let (errors, _) = cfg.validate();
+        assert!(errors.is_empty());
+    }
 }
