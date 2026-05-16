@@ -287,11 +287,9 @@ async fn run_bus_listener(
             {
                 continue;
             }
-            last_trigger.insert(event.name.clone(), now);
 
-            // For battery events, query full state instead of relying on changed_props only
-            let is_battery_event =
-                path.contains("battery") || path.contains("BAT") || path.contains("headset_dev");
+            // Use event config metadata instead of fragile path string matching
+            let is_battery_event = event.match_rule.arg0.as_deref() == Some("org.freedesktop.UPower.Device");
             let is_bluetooth_event = event.match_rule.arg0.as_deref() == Some("org.bluez.Device1");
 
             let (percentage, state) = if is_battery_event {
@@ -362,6 +360,9 @@ async fn run_bus_listener(
             if tx.send(Event::Notify(notify_event)).await.is_err() {
                 return Ok(());
             }
+
+            // Record debounce only after successful send
+            last_trigger.insert(event.name.clone(), now);
         }
     }
 
