@@ -127,13 +127,9 @@ impl LayerApp {
             return;
         }
 
-        let dummy = cairo::ImageSurface::create(cairo::Format::ARgb32, 1, 1).unwrap();
-        let cr = cairo::Context::new(&dummy).unwrap();
-        let (w, h) = draw::draw_with_signal(&cr, text, config, signal, draw_state);
+        let (w, h) = draw::measure_text(text, config, signal);
 
-        // Skip drawing if animation says not visible
         if w <= 1 || h <= 1 {
-            // For blink-off, just clear the surface
             if let Some(layer) = &self.layer_surface
                 && let Some(pool) = &mut self.pool
                 && let Ok((buffer, canvas)) = pool.create_buffer(1, 1, 4, wl_shm::Format::Argb8888)
@@ -151,7 +147,6 @@ impl LayerApp {
         self.width = w as u32;
         self.height = h as u32;
 
-        // Create or resize pool if needed
         let needed = self.width as usize * self.height as usize * 4;
         match &mut self.pool {
             None => {
@@ -169,7 +164,6 @@ impl LayerApp {
 
         let stride = self.width as i32 * 4;
 
-        // Get buffer from pool
         let (buffer, canvas) = {
             let pool = self.pool.as_mut().unwrap();
             pool.create_buffer(
@@ -181,7 +175,6 @@ impl LayerApp {
             .expect("create buffer")
         };
 
-        // Draw to canvas using unsafe
         unsafe {
             let ptr = canvas.as_ptr() as *mut u8;
             let len = canvas.len();
@@ -201,7 +194,6 @@ impl LayerApp {
             surface.flush();
         }
 
-        // Attach buffer to surface
         let layer = self.layer_surface.as_ref().unwrap();
         layer.set_size(self.width, self.height);
         layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);

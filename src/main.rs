@@ -11,6 +11,7 @@ use std::time::Duration;
 use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc;
 
+mod args;
 mod config;
 mod control;
 mod dbus;
@@ -18,6 +19,7 @@ mod draw;
 mod events;
 mod layer;
 
+use args::{Action, Args};
 use config::{AppConfig, HIDE_TIMEOUT_SECS};
 use control::ControlEvent;
 use dbus::Event;
@@ -25,29 +27,6 @@ use draw::{DrawState, format_text};
 use layer::LayerApp;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const HELP: &str = r#"inno - Wayland notification daemon with configurable DBus events
-
-USAGE:
-    inno [OPTIONS]
-
-OPTIONS:
-    -h, --help              Show this help message
-    -v, --version           Show version
-    -d, --debug             Run in debug mode (spitting logs to terminal)
-    --daemon                Run in background (daemon mode)
-    -l, --log-file <PATH>   Log output to file (useful with --daemon)
-    --no-dbus               Disable DBus control interface
-    --test <number>         Preview specific animation (1-6)
-    --test-animations       Cycle through all animations for testing
-
-CONFIG:
-    ~/.config/inno/inno.toml   (main config)
-    ~/.config/inno/events/     (event definitions)
-
-DBUS CONTROL:
-    busctl --user call org.inno.Control /org/inno/Control org.inno.Control Show "st" "Hello" 5
-    busctl --user call org.inno.Control /org/inno/Control org.inno.Control Hide
-"#;
 
 /// Play sound file if exists
 fn play_sound(path: &PathBuf) {
@@ -74,103 +53,54 @@ fn play_sound(path: &PathBuf) {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-    let mut log_file: Option<PathBuf> = None;
-    let mut enable_dbus = true;
-    let mut debug_mode = false;
-    let mut is_internal_daemon = false;
-    let mut test_animations = false;
-    let mut specific_test_anim: Option<usize> = None;
+    let Args { action, debug_mode, enable_dbus, log_file, test_animation, test_all_animations } =
+        args::parse();
 
-    // First pass to check critical flags
-    for arg in &args {
-        match arg.as_str() {
-            "-d" | "--debug" => {
-                debug_mode = true;
-            }
-            "--no-dbus" => {
-                enable_dbus = false;
-            }
-            "--internal-daemon" => {
-                is_internal_daemon = true;
-            }
-            "--test-animations" => {
-                test_animations = true;
-                debug_mode = true; // Always enable debug for testing
-            }
-            _ => {}
+    match action {
+        Action::Help => {
+            print!("{}", args::help_text());
+            return Ok(());
         }
-    }
+        Action::Version => {
+            println!("inno {}", VERSION);
+            return Ok(());
+        }
+        Action::Daemon => {
+            // Parent process: respawn as internal daemon
+            println!("inno is running as a daemon. To stop it, use 'pkill inno'.");
+            use std::os::unix::process::CommandExt;
 
-    // Parse remaining arguments
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "-h" | "--help" => {
-                print!("{}", HELP);
-                return Ok(());
-            }
-            "-v" | "--version" => {
-                println!("inno {}", VERSION);
-                return Ok(());
-            }
-            "-l" | "--log-file" => {
-                i += 1;
-                if i < args.len() {
-                    log_file = Some(PathBuf::from(&args[i]));
+            let args: Vec<String> = std::env::args().collect();
+            let mut cmd = std::process::Command::new(&args[0]);
+            for arg in &args[1..] {
+                if arg != "--daemon" {
+                    cmd.arg(arg);
                 }
             }
-            "--test-animations" => {
-                test_animations = true;
+            cmd.arg("--internal-daemon");
+
+            unsafe {
+                cmd.pre_exec(|| {
+                    libc::setsid();
+                    Ok(())
+                });
             }
-            "--test" => {
-                i += 1;
-                if i < args.len()
-                    && let Ok(idx) = args[i].parse::<usize>()
-                    && (1..=6).contains(&idx)
-                {
-                    specific_test_anim = Some(idx - 1);
-                    test_animations = true;
-                    debug_mode = true;
-                }
+
+            if let Some(ref path) = log_file
+                && let Ok(file) = File::create(path)
+            {
+                cmd.stderr(file);
             }
-            _ => {}
+
+            cmd.spawn().expect("Failed to spawn background daemon");
+            std::process::exit(0);
         }
-        i += 1;
+        Action::InternalDaemon => {}
     }
 
     if debug_mode {
         println!("inno is running in debug mode.");
-    } else if !is_internal_daemon {
-        // Parent process: Handle daemonization via self-respawn
-        println!("inno is running as a daemon. To stop it, use 'pkill inno'.");
-        use std::os::unix::process::CommandExt;
-
-        let mut cmd = std::process::Command::new(&args[0]);
-        for arg in &args[1..] {
-            if arg != "--daemon" {
-                cmd.arg(arg);
-            }
-        }
-        cmd.arg("--internal-daemon");
-
-        unsafe {
-            cmd.pre_exec(|| {
-                libc::setsid();
-                Ok(())
-            });
-        }
-
-        if let Some(ref path) = log_file
-            && let Ok(file) = File::create(path)
-        {
-            cmd.stderr(file);
-        }
-
-        cmd.spawn().expect("Failed to spawn background daemon");
-        std::process::exit(0);
     }
-    // Redirect stderr to log file is already handled by spawn redirection above.
 
     let mut config = AppConfig::load();
     eprintln!("inno: loaded {} signals", config.signals.len());
@@ -234,7 +164,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Start DBus event listener with configurable events
-    if !test_animations {
+    if !test_all_animations {
         tokio::spawn(async move {
             if let Err(e) = dbus::run_dbus_listener(tx, event_configs).await {
                 eprintln!("DBus error: {}", e);
@@ -277,10 +207,10 @@ async fn main() -> anyhow::Result<()> {
         config::Animation::Bounce,
     ];
     let mut current_test_signal: Option<config::Signal> = None;
-    let mut test_anim_idx = specific_test_anim.unwrap_or(0);
+    let mut test_anim_idx = test_animation.unwrap_or(0);
     let mut test_timer = Box::pin(tokio::time::sleep(Duration::from_secs(0)));
 
-    if test_animations {
+    if test_all_animations {
         eprintln!("Animation testing mode enabled.");
         animating = true;
     }
@@ -398,7 +328,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
-            _ = &mut test_timer, if test_animations => {
+            _ = &mut test_timer, if test_all_animations => {
                 let anim = test_animations_list[test_anim_idx].clone();
                 let anim_name = format!("{:?}", anim);
                 eprintln!("Testing animation: {}", anim_name);
@@ -428,7 +358,7 @@ async fn main() -> anyhow::Result<()> {
                 current_test_signal = Some(test_signal);
                 hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(10)));
 
-                if let Some(fixed_idx) = specific_test_anim {
+                if let Some(fixed_idx) = test_animation {
                     test_anim_idx = fixed_idx;
                     test_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
                 } else {
@@ -440,15 +370,13 @@ async fn main() -> anyhow::Result<()> {
 
             _ = &mut animation_timer, if animating => {
                 if let Some(text) = &current_text {
-                    if test_animations {
-                        // Reuse the cached test signal instead of recreating it every frame
+                    if test_all_animations {
                         if let Some(ref sig) = current_test_signal {
                             let total_frames = sig.duration as f64 * config.fps as f64;
                             draw_state.tick(&sig.animation, total_frames, config.fps as f64);
                             app.draw_text_with_signal(text, &config, Some(sig), &draw_state);
                         }
                     } else if let Some(idx) = current_signal_idx {
-                        // Use cached signal index instead of re-searching every frame
                         let signal = &config.signals[idx];
                         let total_frames = signal.duration as f64 * config.fps as f64;
                         draw_state.tick(&signal.animation, total_frames, config.fps as f64);
@@ -467,7 +395,7 @@ async fn main() -> anyhow::Result<()> {
                     draw_state.reset();
                     hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
 
-                    if specific_test_anim.is_some() {
+                    if test_animation.is_some() {
                         println!("Specific test completed, exiting.");
                         break;
                     }

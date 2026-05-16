@@ -3,7 +3,7 @@
 //! Listens for DBus signals based on configurable event definitions.
 
 use crate::events::{EventConfig, format_message};
-use futures::StreamExt;
+use futures::{StreamExt, future::join_all};
 use std::collections::HashMap;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -157,7 +157,6 @@ pub async fn run_dbus_listener(
     tx: mpsc::Sender<Event>,
     events: Vec<EventConfig>,
 ) -> anyhow::Result<()> {
-    // Separate events by bus type
     let system_events: Vec<_> = events.iter().filter(|e| e.bus == "system").collect();
     let session_events: Vec<_> = events.iter().filter(|e| e.bus == "session").collect();
 
@@ -167,30 +166,33 @@ pub async fn run_dbus_listener(
         session_events.len()
     );
 
-    // Start system bus listener if we have system events
+    let mut handles = Vec::new();
+
     if !system_events.is_empty() {
         let tx_clone = tx.clone();
         let events_clone: Vec<EventConfig> = system_events.into_iter().cloned().collect();
-        tokio::spawn(async move {
+        handles.push(tokio::spawn(async move {
             if let Err(e) = run_bus_listener("system", tx_clone, events_clone).await {
                 eprintln!("System bus listener error: {}", e);
             }
-        });
+        }));
     }
 
-    // Start session bus listener if we have session events
     if !session_events.is_empty() {
         let tx_clone = tx.clone();
         let events_clone: Vec<EventConfig> = session_events.into_iter().cloned().collect();
-        tokio::spawn(async move {
+        handles.push(tokio::spawn(async move {
             if let Err(e) = run_bus_listener("session", tx_clone, events_clone).await {
                 eprintln!("Session bus listener error: {}", e);
             }
-        });
+        }));
     }
 
-    // Keep the main task alive
-    futures::future::pending::<()>().await;
+    if handles.is_empty() {
+        return Ok(());
+    }
+
+    join_all(handles).await;
     Ok(())
 }
 

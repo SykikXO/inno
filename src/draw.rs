@@ -132,6 +132,31 @@ pub fn format_text(fmt: &str, icon: &str, message: &str, percent: Option<f64>) -
     res
 }
 
+/// Measure text and icon dimensions without rendering
+pub fn measure_text(text: &str, config: &AppConfig, signal: Option<&Signal>) -> (i32, i32) {
+    let dummy = cairo::ImageSurface::create(cairo::Format::ARgb32, 1, 1).unwrap();
+    let cr = cairo::Context::new(&dummy).unwrap();
+
+    cr.select_font_face(&config.font, config.font_slant, config.font_weight);
+
+    let mut icon_w = 0.0;
+    if let Some(s) = signal
+        && !s.icon.is_empty()
+    {
+        let icon_ext = measure_icon(&cr, &s.icon, s.icon_size);
+        icon_w = icon_ext.x_advance() + 10.0;
+    }
+
+    cr.set_font_size(config.font_size);
+    let ext = cr.text_extents(text).unwrap();
+
+    let w = ext.width().ceil() as i32 + 20 + icon_w as i32;
+    let h_content = ext.height().ceil() + 20.0;
+    let h = (h_content + V_PADDING_TOP + V_PADDING_BOTTOM) as i32;
+
+    (w, h)
+}
+
 pub fn draw_with_signal(
     cr: &Context,
     text: &str,
@@ -142,7 +167,6 @@ pub fn draw_with_signal(
     let (r_bg, g_bg, b_bg, a_bg) = config.bg_color;
     let (r, g, b, a) = signal.map(|s| s.color).unwrap_or(config.text_color);
 
-    // Blink off - return minimal size
     if signal.is_some_and(|s| s.animation == Animation::Blink && !state.visible) {
         cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
         cr.set_operator(cairo::Operator::Source);
@@ -152,7 +176,6 @@ pub fn draw_with_signal(
 
     let alpha = state.alpha;
 
-    // Select font and measure icon
     cr.select_font_face(&config.font, config.font_slant, config.font_weight);
 
     let mut icon_w = 0.0;
@@ -163,7 +186,6 @@ pub fn draw_with_signal(
         icon_w = icon_ext.x_advance() + 10.0;
     }
 
-    // Measure main text
     cr.set_font_size(config.font_size);
     let ext = cr.text_extents(text).unwrap();
 
@@ -171,19 +193,15 @@ pub fn draw_with_signal(
     let h_content = ext.height().ceil() + 20.0;
     let h = (h_content + V_PADDING_TOP + V_PADDING_BOTTOM) as i32;
 
-    // Clear canvas
     cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
     cr.set_operator(cairo::Operator::Source);
     cr.paint().unwrap();
 
-    // Apply animation offsets and padding
     cr.translate(state.offset_x, state.offset_y + V_PADDING_TOP);
 
-    // Draw background (with optional gradient and rounded corners)
     cr.set_operator(cairo::Operator::Over);
 
     if config.gradient {
-        // Create an attractive internal visual gradient
         let gradient = LinearGradient::new(0.0, 0.0, w as f64, 0.0);
         gradient.add_color_stop_rgba(0.0, r_bg, g_bg, b_bg, a_bg * alpha);
         gradient.add_color_stop_rgba(1.0, r_bg * 0.7, g_bg * 0.7, b_bg * 0.7, a_bg * alpha * 0.8);
@@ -200,7 +218,6 @@ pub fn draw_with_signal(
         cr.fill().unwrap();
     }
 
-    // Draw icon
     let text_x = if let Some(s) = signal {
         if !s.icon.is_empty() {
             let icon_ext = measure_icon(cr, &s.icon, s.icon_size);
@@ -219,7 +236,6 @@ pub fn draw_with_signal(
         10.0
     };
 
-    // Draw text
     cr.set_source_rgba(r, g, b, a * alpha);
     cr.move_to(text_x, h_content / 2.0 - (ext.height() / 2.0 + ext.y_bearing()));
     cr.show_text(text).unwrap();
