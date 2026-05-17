@@ -225,9 +225,16 @@ async fn main() -> anyhow::Result<()> {
             if let Some(ref text) = state.current_text {
                 state.draw_state.reset();
                 if let Some(idx) = state.current_signal_idx {
-                    let signal = &config.signals[idx];
-                    app.draw_text_with_signal(text, &config, Some(signal), &state.draw_state);
-                    state.animating = signal.animation != config::Animation::None;
+                    if idx >= config.signals.len() {
+                        eprintln!("Stale signal index {}, clearing", idx);
+                        state.current_signal_idx = None;
+                        state.animating = false;
+                        app.hide();
+                    } else {
+                        let signal = &config.signals[idx];
+                        app.draw_text_with_signal(text, &config, Some(signal), &state.draw_state);
+                        state.animating = signal.animation != config::Animation::None;
+                    }
                 } else {
                     app.draw_text(text, &config);
                     state.animating = false;
@@ -346,10 +353,17 @@ async fn main() -> anyhow::Result<()> {
                             app.draw_text_with_signal(text, &config, Some(sig), &state.draw_state);
                         }
                     } else if let Some(idx) = state.current_signal_idx {
-                        let signal = &config.signals[idx];
-                        let total_frames = signal.duration as f64 * config.fps as f64;
-                        state.draw_state.tick(&signal.animation, total_frames, config.fps as f64);
-                        app.draw_text_with_signal(text, &config, Some(signal), &state.draw_state);
+                        if idx >= config.signals.len() {
+                            eprintln!("Stale signal index {}, clearing", idx);
+                            state.current_signal_idx = None;
+                            state.animating = false;
+                            app.hide();
+                        } else {
+                            let signal = &config.signals[idx];
+                            let total_frames = signal.duration as f64 * config.fps as f64;
+                            state.draw_state.tick(&signal.animation, total_frames, config.fps as f64);
+                            app.draw_text_with_signal(text, &config, Some(signal), &state.draw_state);
+                        }
                     }
                 }
                 animation_timer = Box::pin(tokio::time::sleep(Duration::from_micros(1_000_000 / config.fps.max(1))));
