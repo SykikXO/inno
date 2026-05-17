@@ -257,6 +257,7 @@ pub struct Signal {
     pub icon: String,
     pub icon_size: f64,
     pub color: (f64, f64, f64, f64),
+    pub color_name: String,
     pub threshold: f64,
     pub state_filter: String,
     pub animation: Animation,
@@ -449,13 +450,17 @@ impl AppConfig {
                 .colors
                 .get(&sig_cfg.color)
                 .map(|c| (c[0], c[1], c[2], c[3]))
-                .unwrap_or((1.0, 1.0, 1.0, 1.0));
+                .unwrap_or_else(|| {
+                    eprintln!("Warning: color '{}' not found in [colors], defaulting to white", sig_cfg.color);
+                    (1.0, 1.0, 1.0, 1.0)
+                });
 
             let signal = Signal {
                 message: sig_cfg.message,
                 icon: sig_cfg.icon,
                 icon_size: sig_cfg.icon_size.unwrap_or(DEFAULT_ICON_SIZE),
                 color,
+                color_name: sig_cfg.color,
                 threshold: sig_cfg.threshold,
                 state_filter: sig_cfg.state.to_lowercase(),
                 animation: parse_animation(&sig_cfg.animation),
@@ -521,6 +526,12 @@ impl AppConfig {
             let (r, g, b, a) = sig.color;
             if !(0.0..=1.0).contains(&r) || !(0.0..=1.0).contains(&g) || !(0.0..=1.0).contains(&b) || !(0.0..=1.0).contains(&a) {
                 errors.push(format!("signal[{}]: color values must be 0.0-1.0", i));
+            }
+            if !sig.color_name.is_empty()
+                && sig.color == (1.0, 1.0, 1.0, 1.0)
+                && sig.color_name != "white"
+            {
+                warnings.push(format!("signal[{}]: color '{}' not found in [colors], resolved to white", i, sig.color_name));
             }
             if let Some(ref sound_path) = sig.sound
                 && !sound_path.exists() {
@@ -617,6 +628,7 @@ mod tests {
                     icon: "".into(),
                     icon_size: 24.0,
                     color: (1.0, 0.0, 0.0, 1.0),
+                    color_name: "red".into(),
                     threshold: 20.0,
                     state_filter: "charging".into(),
                     animation: Animation::None,
@@ -628,6 +640,7 @@ mod tests {
                     icon: "".into(),
                     icon_size: 24.0,
                     color: (1.0, 1.0, 0.0, 1.0),
+                    color_name: "yellow".into(),
                     threshold: 50.0,
                     state_filter: "charging".into(),
                     animation: Animation::None,
@@ -639,6 +652,7 @@ mod tests {
                     icon: "".into(),
                     icon_size: 24.0,
                     color: (0.0, 1.0, 0.0, 1.0),
+                    color_name: "green".into(),
                     threshold: 80.0,
                     state_filter: "charging".into(),
                     animation: Animation::None,
@@ -664,6 +678,7 @@ mod tests {
                     icon: "".into(),
                     icon_size: 24.0,
                     color: (1.0, 0.0, 0.0, 1.0),
+                    color_name: "red".into(),
                     threshold: 10.0,
                     state_filter: "discharging".into(),
                     animation: Animation::None,
@@ -675,6 +690,7 @@ mod tests {
                     icon: "".into(),
                     icon_size: 24.0,
                     color: (1.0, 1.0, 0.0, 1.0),
+                    color_name: "yellow".into(),
                     threshold: 30.0,
                     state_filter: "discharging".into(),
                     animation: Animation::None,
@@ -698,6 +714,7 @@ mod tests {
                 icon: "".into(),
                 icon_size: 24.0,
                 color: (1.0, 1.0, 1.0, 1.0),
+                color_name: "white".into(),
                 threshold: 50.0,
                 state_filter: "any".into(),
                 animation: Animation::None,
@@ -757,6 +774,7 @@ mod tests {
                 icon: "".into(),
                 icon_size: 24.0,
                 color: (1.5, 0.0, 0.0, 1.0),
+                color_name: "red".into(),
                 threshold: 50.0,
                 state_filter: "any".into(),
                 animation: Animation::None,
@@ -777,6 +795,7 @@ mod tests {
                 icon: "".into(),
                 icon_size: 24.0,
                 color: (1.0, 1.0, 1.0, 1.0),
+                color_name: "white".into(),
                 threshold: 50.0,
                 state_filter: "any".into(),
                 animation: Animation::None,
@@ -797,6 +816,7 @@ mod tests {
                 icon: "".into(),
                 icon_size: 24.0,
                 color: (1.0, 1.0, 1.0, 1.0),
+                color_name: "white".into(),
                 threshold: 50.0,
                 state_filter: "any".into(),
                 animation: Animation::None,
@@ -820,6 +840,7 @@ mod tests {
                 icon: "".into(),
                 icon_size: 24.0,
                 color: (1.0, 1.0, 1.0, 1.0),
+                color_name: "white".into(),
                 threshold: 50.0,
                 state_filter: "any".into(),
                 animation: Animation::None,
@@ -841,6 +862,7 @@ mod tests {
                 icon: "".into(),
                 icon_size: 24.0,
                 color: (1.0, 1.0, 1.0, 1.0),
+                color_name: "white".into(),
                 threshold: 50.0,
                 state_filter: "any".into(),
                 animation: Animation::None,
@@ -857,6 +879,27 @@ mod tests {
     fn test_default_scale_is_one() {
         let cfg = AppConfig::default();
         assert!((cfg.scale - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_validate_unknown_color_name() {
+        let cfg = AppConfig {
+            signals: vec![Signal {
+                message: "test".into(),
+                icon: "".into(),
+                icon_size: 24.0,
+                color: (1.0, 1.0, 1.0, 1.0),
+                color_name: "gren".into(),
+                threshold: 50.0,
+                state_filter: "any".into(),
+                animation: Animation::None,
+                duration: 5,
+                sound: None,
+            }],
+            ..Default::default()
+        };
+        let (_, warnings) = cfg.validate();
+        assert!(warnings.iter().any(|w| w.contains("gren") && w.contains("white")));
     }
 
     #[test]

@@ -248,7 +248,9 @@ async fn main() -> anyhow::Result<()> {
             hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
         }
 
-        let _ = conn.flush();
+        if let Err(e) = conn.flush() {
+            eprintln!("Wayland flush error: {}", e);
+        }
 
         tokio::select! {
             Some(()) = config_rx.recv() => {
@@ -314,6 +316,7 @@ async fn main() -> anyhow::Result<()> {
                     icon: "󰚗".to_string(),
                     icon_size: 24.0,
                     color: (0.2, 0.8, 0.2, 1.0),
+                    color_name: "".to_string(),
                     threshold: 0.0,
                     state_filter: "any".to_string(),
                     animation: anim,
