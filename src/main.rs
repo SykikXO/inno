@@ -352,7 +352,7 @@ async fn main() -> anyhow::Result<()> {
                         app.draw_text_with_signal(text, &config, Some(signal), &state.draw_state);
                     }
                 }
-                animation_timer = Box::pin(tokio::time::sleep(Duration::from_micros(1_000_000 / config.fps)));
+                animation_timer = Box::pin(tokio::time::sleep(Duration::from_micros(1_000_000 / config.fps.max(1))));
             }
 
             _ = &mut hide_timer => {
