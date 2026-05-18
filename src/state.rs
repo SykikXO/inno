@@ -66,14 +66,6 @@ impl NotificationState {
             let pct = notify_event.percentage.unwrap_or(100.0);
             let st = notify_event.state.clone().unwrap_or_else(|| "unknown".to_string());
 
-            if let Some(p) = notify_event.percentage {
-                battery_percentage.store((p * 100.0) as u32, Ordering::Relaxed);
-            }
-            if let Some(ref s) = notify_event.state
-                && let Ok(mut shared) = battery_state_shared.write() {
-                *shared = s.clone();
-            }
-
             (pct, st)
         };
 
