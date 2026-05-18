@@ -513,17 +513,20 @@ impl AppConfig {
     /// Returns the index of the best matching signal, avoiding allocation
     /// when only the index is needed (e.g. for caching during animation).
     pub fn find_signal_idx(&self, pct: f64, state: &str) -> Option<usize> {
-        let is_charging = state.eq_ignore_ascii_case("charging");
+        // Charging and full use ascending logic (pct >= threshold, best = highest).
+        // Everything else (discharging, connected, etc.) uses descending (pct <= threshold, best = lowest).
+        let is_ascending = state.eq_ignore_ascii_case("charging")
+            || state.eq_ignore_ascii_case("full");
 
         let mut best_idx: Option<usize> = None;
-        let mut best_threshold: f64 = if is_charging { f64::MIN } else { f64::MAX };
+        let mut best_threshold: f64 = if is_ascending { f64::MIN } else { f64::MAX };
 
         for (i, s) in self.signals.iter().enumerate() {
             let state_match = s.state_filter == "any" || s.state_filter.eq_ignore_ascii_case(state);
-            let threshold_match = if is_charging { pct >= s.threshold } else { pct <= s.threshold };
+            let threshold_match = if is_ascending { pct >= s.threshold } else { pct <= s.threshold };
 
             if state_match && threshold_match {
-                let is_better = if is_charging {
+                let is_better = if is_ascending {
                     s.threshold > best_threshold
                 } else {
                     s.threshold < best_threshold
@@ -1071,6 +1074,31 @@ mod tests {
         // State matching should be case-insensitive
         assert_eq!(cfg.find_signal_idx(60.0, "Charging"), Some(0));
         assert_eq!(cfg.find_signal_idx(60.0, "CHARGING"), Some(0));
+    }
+
+    #[test]
+    fn test_find_signal_idx_full_uses_ascending() {
+        // "full" state should use ascending semantics like "charging" —
+        // a full battery at 100% should match signals with threshold <= 100
+        let cfg = AppConfig {
+            signals: vec![Signal {
+                message: "optimal".into(),
+                icon: "".into(),
+                icon_size: 24.0,
+                color: (0.0, 1.0, 0.0, 1.0),
+                color_name: "green".into(),
+                threshold: 80.0,
+                state_filter: "any".into(),
+                animation: Animation::None,
+                duration: 5,
+                sound: None,
+            }],
+            ..Default::default()
+        };
+        // full at 100% with threshold=80: ascending → 100 >= 80 → matches
+        assert_eq!(cfg.find_signal_idx(100.0, "full"), Some(0));
+        // full at 70% with threshold=80: ascending → 70 >= 80 → no match
+        assert_eq!(cfg.find_signal_idx(70.0, "full"), None);
     }
 
     #[test]
