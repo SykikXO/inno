@@ -2,14 +2,13 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 
-use crate::battery::{aggregate_battery_state, is_battery_event};
+use crate::battery::aggregate_battery_state;
 use crate::config::{AppConfig, HIDE_TIMEOUT_SECS};
 use crate::dbus::NotifyEvent;
 use crate::draw::{DrawState, format_text};
 use crate::layer::LayerApp;
 use crate::sound::SoundWorker;
 
-const MAX_QUEUE_SIZE: usize = 10;
 const MAX_STATE_ENTRIES: usize = 32;
 
 pub struct NotificationState {
@@ -17,7 +16,6 @@ pub struct NotificationState {
     pub draw_state: DrawState,
     pub animating: bool,
     pub current_signal_idx: Option<usize>,
-    pub notify_queue: VecDeque<NotifyEvent>,
     pub battery_devices: HashMap<String, (f64, String)>,
     pub prev_battery_agg: Option<String>,
     pub prev_state: HashMap<String, Option<String>>,
@@ -32,7 +30,6 @@ impl NotificationState {
             draw_state: DrawState::default(),
             animating: false,
             current_signal_idx: None,
-            notify_queue: VecDeque::new(),
             battery_devices: HashMap::new(),
             prev_battery_agg: None,
             prev_state: HashMap::new(),
@@ -50,7 +47,7 @@ impl NotificationState {
         battery_percentage: &Arc<AtomicU32>,
         battery_state_shared: &Arc<RwLock<String>>,
     ) -> Option<std::time::Duration> {
-        let is_battery = is_battery_event(&notify_event.event_name, &notify_event.path);
+        let is_battery = notify_event.is_battery;
 
         let (pct_for_match, state) = if is_battery {
             let pct = notify_event.percentage.unwrap_or(100.0);
@@ -125,18 +122,7 @@ impl NotificationState {
             }
 
             if let Some(sig) = signal {
-                if self.current_text.is_some() {
-                    if self.notify_queue.len() < MAX_QUEUE_SIZE {
-                        self.notify_queue.push_back(notify_event.clone());
-                        eprintln!("Queued notification (queue size: {})", self.notify_queue.len());
-                    } else {
-                        eprintln!("Queue full, dropping oldest notification");
-                        self.notify_queue.pop_front();
-                        self.notify_queue.push_back(notify_event.clone());
-                    }
-                } else {
-                    return Some(self.show_notification(app, config, sound_worker, sig, sig_idx, notify_event, pct_for_match));
-                }
+                return Some(self.show_notification(app, config, sound_worker, sig, sig_idx, notify_event, pct_for_match));
             }
         }
 
@@ -170,7 +156,9 @@ impl NotificationState {
         app.draw_text_with_signal(&text, config, Some(sig), &self.draw_state);
         self.animating = sig.animation != crate::config::Animation::None;
         self.current_signal_idx = sig_idx;
-        let hide_delay = if sig.animation != crate::config::Animation::None {
+        let hide_delay = if sig.duration == 0 {
+            std::time::Duration::MAX
+        } else if sig.animation != crate::config::Animation::None {
             std::time::Duration::from_millis(sig.duration * 1000 + 100)
         } else {
             std::time::Duration::from_secs(sig.duration)
@@ -179,27 +167,11 @@ impl NotificationState {
         hide_delay
     }
 
-    pub fn hide_and_next(
-        &mut self,
-        app: &mut LayerApp,
-        config: &AppConfig,
-        sound_worker: &SoundWorker,
-    ) -> std::time::Duration {
+    pub fn hide_and_next(&mut self, app: &mut LayerApp) -> std::time::Duration {
         app.hide();
         self.current_text = None;
         self.animating = false;
         self.draw_state.reset();
-
-        while let Some(queued_event) = self.notify_queue.pop_front() {
-            let pct = queued_event.percentage.unwrap_or(100.0);
-            let state = queued_event.state.clone().unwrap_or_else(|| "unknown".to_string());
-            let sig_idx = config.find_signal_idx(pct, &state);
-
-            if let Some(sig) = sig_idx.map(|i| &config.signals[i]) {
-                eprintln!("Showing queued notification ({} remaining)", self.notify_queue.len());
-                return self.show_notification(app, config, sound_worker, sig, sig_idx, &queued_event, pct);
-            }
-        }
 
         std::time::Duration::from_secs(HIDE_TIMEOUT_SECS)
     }
@@ -211,23 +183,23 @@ impl NotificationState {
             self.current_text = None;
             self.animating = false;
             self.draw_state.reset();
-            self.notify_queue.clear();
         }
     }
 
-    pub fn on_config_reload(&mut self, _config: &AppConfig) {
+    pub fn on_config_reload(&mut self) {
         self.battery_devices.clear();
         self.prev_battery_agg = None;
-        self.notify_queue.clear();
+        self.prev_state.clear();
+        self.prev_signal_msg.clear();
+        self.state_key_order.clear();
         self.current_signal_idx = None;
-        self.animating = false;
     }
 
     pub fn on_hide_control(&mut self, app: &mut LayerApp) {
         app.hide();
         self.current_text = None;
         self.animating = false;
-        self.notify_queue.clear();
+        self.draw_state.reset();
     }
 
     pub fn on_show_control(
@@ -235,7 +207,6 @@ impl NotificationState {
         app: &mut LayerApp,
         config: &AppConfig,
         message: &str,
-        _duration: u64,
     ) {
         self.draw_state.reset();
         app.draw_text(message, config);

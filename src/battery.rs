@@ -2,11 +2,6 @@ use std::collections::HashMap;
 
 use crate::config;
 
-pub fn is_battery_event(event_name: &str, path: &str) -> bool {
-    event_name.to_lowercase().contains("battery")
-        || path.contains("UPower/devices/battery")
-}
-
 pub fn aggregate_battery_state(
     devices: &HashMap<String, (f64, String)>,
     mode: &config::BatteryMode,
@@ -54,15 +49,6 @@ pub fn aggregate_battery_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_is_battery_event() {
-        assert!(is_battery_event("Laptop Battery", "/org/freedesktop/UPower/devices/battery_BAT0"));
-        assert!(is_battery_event("battery_status", "/some/path"));
-        assert!(is_battery_event("Any", "/org/freedesktop/UPower/devices/battery_hidpp"));
-        assert!(!is_battery_event("Bluetooth", "/org/bluez/hci0/dev_AA_BB_CC"));
-        assert!(!is_battery_event("Network", "/org/freedesktop/NetworkManager"));
-    }
 
     #[test]
     fn test_aggregate_first() {

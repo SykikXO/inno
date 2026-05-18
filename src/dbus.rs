@@ -20,6 +20,8 @@ pub struct NotifyEvent {
     pub percentage: Option<f64>,
     /// State string for signal matching (if applicable)
     pub state: Option<String>,
+    /// True if this event originated from a UPower battery device
+    pub is_battery: bool,
 }
 
 pub enum Event {
@@ -355,6 +357,7 @@ async fn run_bus_listener(
                 message,
                 percentage,
                 state,
+                is_battery: is_battery_event,
             };
 
             if tx.send(Event::Notify(notify_event)).await.is_err() {
