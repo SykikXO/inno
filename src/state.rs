@@ -154,7 +154,7 @@ impl NotificationState {
         let hide_delay = if sig.duration == 0 {
             std::time::Duration::MAX
         } else if sig.animation != crate::config::Animation::None {
-            std::time::Duration::from_millis(sig.duration * 1000 + 500)
+            std::time::Duration::from_millis(sig.duration.saturating_mul(1000).saturating_add(500))
         } else {
             std::time::Duration::from_secs(sig.duration)
         };
