@@ -292,13 +292,15 @@ impl LayerApp {
             .expect("create buffer")
         };
 
-        unsafe {
-            let ptr = canvas.as_ptr() as *mut u8;
-            let len = canvas.len();
-            let canvas_slice = std::slice::from_raw_parts_mut(ptr, len);
+        // SAFETY: canvas is the exclusive mutable slice from SlotPool::create_buffer.
+        // We extract the raw pointer and drop canvas before creating the Cairo surface,
+        // so there is no aliased mutable reference.
+        let ptr = canvas.as_mut_ptr();
+        let _ = canvas;
 
-            let surface = cairo::ImageSurface::create_for_data(
-                canvas_slice,
+        unsafe {
+            let surface = cairo::ImageSurface::create_for_data_unsafe(
+                ptr,
                 cairo::Format::ARgb32,
                 self.width as i32,
                 self.height as i32,
@@ -360,17 +362,18 @@ impl LayerApp {
                 .expect("create buffer")
         };
 
+        // SAFETY: canvas is the exclusive mutable slice from SlotPool::create_buffer.
+        // We zero it, extract the raw pointer, and drop canvas before creating the Cairo
+        // surface, so there is no aliased mutable reference.
+        for b in canvas.iter_mut() {
+            *b = 0;
+        }
+        let ptr = canvas.as_mut_ptr();
+        let _ = canvas;
+
         unsafe {
-            let ptr = canvas.as_ptr() as *mut u8;
-            let len = canvas.len();
-            let canvas_slice = std::slice::from_raw_parts_mut(ptr, len);
-
-            for b in canvas_slice.iter_mut() {
-                *b = 0;
-            }
-
-            let surface = cairo::ImageSurface::create_for_data(
-                canvas_slice,
+            let surface = cairo::ImageSurface::create_for_data_unsafe(
+                ptr,
                 cairo::Format::ARgb32,
                 w,
                 h,
