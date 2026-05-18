@@ -79,9 +79,7 @@ impl DrawState {
                 let period = 0.5 * fps; // Snappy 0.5s period
                 let local_t = (t % period) / period;
                 let height = 4.0 * local_t * (1.0 - local_t); // Parabola: y = 4x(1-x)
-                let bounce_num = (t / period).floor();
-                let decay = 1.0_f64.powf(bounce_num);
-                self.offset_y = -height * 35.0 * decay;
+                self.offset_y = -height * 35.0;
             }
             Animation::None => {
                 self.visible = true;
