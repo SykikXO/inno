@@ -67,7 +67,7 @@ struct SignalConfig {
 }
 
 // Runtime config structures
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Animation {
     None,
     Blink,
@@ -76,6 +76,18 @@ pub enum Animation {
     SlideLeft,
     SlideRight,
     Bounce,
+}
+
+impl Animation {
+    /// All animatable variants (excludes None, used for testing)
+    pub const TEST_VARIANTS: &'static [Self] = &[
+        Self::Blink,
+        Self::Pulse,
+        Self::Fade,
+        Self::SlideLeft,
+        Self::SlideRight,
+        Self::Bounce,
+    ];
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -356,18 +368,27 @@ fn parse_battery_mode(s: &str) -> BatteryMode {
 
 impl AppConfig {
     pub fn load() -> Self {
+        Self::load_inner(false)
+    }
+
+    pub fn load_quiet() -> Self {
+        Self::load_inner(true)
+    }
+
+    fn load_inner(quiet: bool) -> Self {
         let mut config = Self::default();
 
         let search_paths = [
             std::env::current_dir().ok().map(|p| p.join("inno.toml")),
-            std::env::current_dir().ok().and_then(|p| p.parent().map(|pp| pp.join("inno.toml"))),
             dirs::config_dir().map(|p| p.join("inno/inno.toml")),
             Some(PathBuf::from("/etc/xdg/inno/inno.toml")),
         ];
 
         let mut loaded_path = None;
         for path in search_paths.iter().flatten() {
-            eprintln!("Checking config: {:?}", path);
+            if !quiet {
+                eprintln!("Checking config: {:?}", path);
+            }
             if path.exists() {
                 loaded_path = Some(path.clone());
                 break;
@@ -375,12 +396,16 @@ impl AppConfig {
         }
 
         let Some(config_path) = loaded_path else {
-            eprintln!("No config found!");
+            if !quiet {
+                eprintln!("No config found!");
+            }
             return config;
         };
 
         config.config_path = Some(config_path.clone());
-        eprintln!("Loading config from: {:?}", config_path);
+        if !quiet {
+            eprintln!("Loading config from: {:?}", config_path);
+        }
 
         if let Err(e) = config.load_toml(&config_path) {
             eprintln!("Failed to parse TOML config: {}", e);
@@ -445,6 +470,7 @@ impl AppConfig {
         }
 
         // Parse signals
+        let config_dir = path.parent().map(PathBuf::from);
         for sig_cfg in file.signal {
             let color = file
                 .colors
@@ -454,6 +480,17 @@ impl AppConfig {
                     eprintln!("Warning: color '{}' not found in [colors], defaulting to white", sig_cfg.color);
                     (1.0, 1.0, 1.0, 1.0)
                 });
+
+            let sound_path = sig_cfg.sound.map(|s| {
+                let p = PathBuf::from(&s);
+                if p.is_absolute() {
+                    p
+                } else if let Some(ref dir) = config_dir {
+                    dir.join(&p)
+                } else {
+                    p
+                }
+            });
 
             let signal = Signal {
                 message: sig_cfg.message,
@@ -465,7 +502,7 @@ impl AppConfig {
                 state_filter: sig_cfg.state.to_lowercase(),
                 animation: parse_animation(&sig_cfg.animation),
                 duration: sig_cfg.duration.unwrap_or(5),
-                sound: sig_cfg.sound.map(PathBuf::from),
+                sound: sound_path,
             };
             self.signals.push(signal);
         }
@@ -515,7 +552,7 @@ impl AppConfig {
                 errors.push(format!("signal[{}]: message is empty", i));
             }
             if sig.duration == 0 {
-                errors.push(format!("signal[{}]: duration must be > 0", i));
+                // duration = 0 means infinite (no auto-hide, dismiss by click only)
             }
             if sig.threshold < 0.0 || sig.threshold > 100.0 {
                 errors.push(format!("signal[{}]: threshold {} out of range 0-100", i, sig.threshold));
@@ -805,7 +842,7 @@ mod tests {
             ..Default::default()
         };
         let (errors, _) = cfg.validate();
-        assert!(errors.iter().any(|e| e.contains("duration")));
+        assert!(errors.is_empty());
     }
 
     #[test]

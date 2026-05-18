@@ -34,7 +34,7 @@ impl DrawState {
             }
             Animation::Pulse => {
                 self.visible = true;
-                self.alpha = 0.7 + 0.4 * (t * 0.15).sin().abs();
+                self.alpha = 0.6 + 0.4 * (t * 0.15).sin().abs();
                 self.offset_x = 0.0;
                 self.offset_y = 0.0;
             }
@@ -76,11 +76,13 @@ impl DrawState {
                 self.visible = true;
                 self.alpha = 1.0;
                 self.offset_x = 0.0;
-                // Parabolic bounce with decay
+                // Parabolic bounce with exponential decay
                 let period = 0.5 * fps; // Snappy 0.5s period
                 let local_t = (t % period) / period;
                 let height = 4.0 * local_t * (1.0 - local_t); // Parabola: y = 4x(1-x)
                 let bounce_num = (t / period).floor();
+                // Decay factor is 1.0 (no decay) — bounce continues at full height.
+                // Change to e.g. 0.8 if you want exponential decay over time.
                 let decay = 1.0_f64.powf(bounce_num);
                 self.offset_y = -height * 35.0 * decay;
             }
@@ -309,7 +311,7 @@ mod tests {
             state.tick(&config::Animation::Pulse, 300.0, 60.0);
         }
         assert!(state.visible);
-        assert!(state.alpha >= 0.7 && state.alpha <= 1.1);
+        assert!(state.alpha >= 0.6 && state.alpha <= 1.0);
         assert!((state.offset_x - 0.0).abs() < f64::EPSILON);
         assert!((state.offset_y - 0.0).abs() < f64::EPSILON);
     }

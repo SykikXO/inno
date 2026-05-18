@@ -206,19 +206,28 @@ fn default_debounce() -> u64 {
 
 /// Load all event configs from the events directory
 pub fn load_events() -> Vec<EventConfig> {
+    load_events_inner(false)
+}
+
+pub fn load_events_quiet() -> Vec<EventConfig> {
+    load_events_inner(true)
+}
+
+fn load_events_inner(quiet: bool) -> Vec<EventConfig> {
     let mut events = Vec::new();
 
     // Search paths for events directory
     let search_paths = [
         std::env::current_dir().ok().map(|p| p.join("events")),
-        std::env::current_dir().ok().and_then(|p| p.parent().map(|pp| pp.join("events"))),
         dirs::config_dir().map(|p| p.join("inno/events")),
         Some(PathBuf::from("/etc/xdg/inno/events")),
     ];
 
     for events_dir in search_paths.iter().flatten() {
         if events_dir.is_dir() {
-            eprintln!("Loading events from: {:?}", events_dir);
+            if !quiet {
+                eprintln!("Loading events from: {:?}", events_dir);
+            }
             if let Ok(entries) = std::fs::read_dir(events_dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
@@ -226,18 +235,24 @@ pub fn load_events() -> Vec<EventConfig> {
                         match load_event_file(&path) {
                             Ok(event) => {
                                 if event.enabled {
-                                    eprintln!(
-                                        "  Loaded event: {} ({})",
-                                        event.name,
-                                        path.display()
-                                    );
+                                    if !quiet {
+                                        eprintln!(
+                                            "  Loaded event: {} ({})",
+                                            event.name,
+                                            path.display()
+                                        );
+                                    }
                                     events.push(event);
                                 } else {
-                                    eprintln!("  Skipped disabled event: {}", event.name);
+                                    if !quiet {
+                                        eprintln!("  Skipped disabled event: {}", event.name);
+                                    }
                                 }
                             }
                             Err(e) => {
-                                eprintln!("  Failed to load {:?}: {}", path, e);
+                                if !quiet {
+                                    eprintln!("  Failed to load {:?}: {}", path, e);
+                                }
                             }
                         }
                     }
@@ -248,7 +263,9 @@ pub fn load_events() -> Vec<EventConfig> {
     }
 
     if events.is_empty() {
-        eprintln!("No event configs found, using built-in battery event");
+        if !quiet {
+            eprintln!("No event configs found, using built-in battery event");
+        }
         events.push(builtin_battery_event());
     }
 

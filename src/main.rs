@@ -72,8 +72,8 @@ async fn main() -> anyhow::Result<()> {
             std::process::exit(0);
         }
         Action::CheckConfig => {
-            let cfg = AppConfig::load();
-            let event_cfgs = events::load_events();
+            let cfg = AppConfig::load_quiet();
+            let event_cfgs = events::load_events_quiet();
             let (errors, warnings) = cfg.validate();
             if let Some(ref path) = cfg.config_path {
                 println!("Config file: {:?}", path);
@@ -123,6 +123,7 @@ async fn main() -> anyhow::Result<()> {
     let battery_percentage = Arc::new(AtomicU32::new(10000));
     let battery_state_shared = Arc::new(RwLock::new("unknown".to_string()));
 
+    // Keep-alive: dropping this would disconnect the DBus control interface
     let _dbus_conn = if enable_dbus {
         match control::start_control_service(
             control_tx.clone(),
@@ -195,14 +196,7 @@ async fn main() -> anyhow::Result<()> {
     let mut animation_timer =
         Box::pin(tokio::time::sleep(Duration::from_micros(1_000_000 / config.fps.max(1))));
 
-    let test_animations_list = [
-        config::Animation::Blink,
-        config::Animation::Pulse,
-        config::Animation::Fade,
-        config::Animation::SlideRight,
-        config::Animation::SlideLeft,
-        config::Animation::Bounce,
-    ];
+    let test_animations_list = config::Animation::TEST_VARIANTS;
     let mut current_test_signal: Option<config::Signal> = None;
     let mut test_anim_idx = test_animation.unwrap_or(0);
     let mut test_timer = Box::pin(tokio::time::sleep(Duration::from_secs(0)));
@@ -260,7 +254,7 @@ async fn main() -> anyhow::Result<()> {
                 eprintln!("inno: reloaded {} signals", config.signals.len());
                 app.frame_cache.clear();
                 animation_timer = Box::pin(tokio::time::sleep(Duration::from_micros(1_000_000 / config.fps.max(1))));
-                state.on_config_reload(&config);
+                state.on_config_reload();
                 if (config.scale - old_scale).abs() > 0.01 {
                     eprintln!("Scale changed, redrawing...");
                     app.scale_changed = true;
@@ -271,8 +265,12 @@ async fn main() -> anyhow::Result<()> {
                 match control_event {
                     ControlEvent::Show { message, duration } => {
                         eprintln!("DBus: Show '{}' for {}s", message, duration);
-                        state.on_show_control(&mut app, &config, &message, duration);
-                        hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(duration)));
+                        state.on_show_control(&mut app, &config, &message);
+                        hide_timer = Box::pin(tokio::time::sleep(if duration == 0 {
+                            Duration::MAX
+                        } else {
+                            Duration::from_secs(duration)
+                        }));
                     }
                     ControlEvent::Hide => {
                         eprintln!("DBus: Hide");
@@ -284,7 +282,7 @@ async fn main() -> anyhow::Result<()> {
                         config = AppConfig::load();
                         eprintln!("inno: reloaded {} signals", config.signals.len());
                         app.frame_cache.clear();
-                        state.on_config_reload(&config);
+                        state.on_config_reload();
                     }
                 }
             }
@@ -307,7 +305,7 @@ async fn main() -> anyhow::Result<()> {
             }
 
             _ = &mut test_timer, if test_all_animations => {
-                let anim = test_animations_list[test_anim_idx].clone();
+                let anim = test_animations_list[test_anim_idx];
                 let anim_name = format!("{:?}", anim);
                 eprintln!("Testing animation: {}", anim_name);
 
@@ -374,13 +372,21 @@ async fn main() -> anyhow::Result<()> {
 
             _ = &mut hide_timer => {
                 if state.current_text.is_some() {
-                    println!("Auto-hiding");
-                    let delay = state.hide_and_next(&mut app, &config, &sound_worker);
-                    hide_timer = Box::pin(tokio::time::sleep(delay));
+                    let is_infinite = state.current_signal_idx
+                        .map(|idx| config.signals.get(idx).is_some_and(|s| s.duration == 0))
+                        .unwrap_or(false);
 
-                    if test_animation.is_some() {
-                        println!("Specific test completed, exiting.");
-                        break;
+                    if is_infinite {
+                        hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
+                    } else {
+                        println!("Auto-hiding");
+                        let delay = state.hide_and_next(&mut app);
+                        hide_timer = Box::pin(tokio::time::sleep(delay));
+
+                        if test_animation.is_some() {
+                            println!("Specific test completed, exiting.");
+                            break;
+                        }
                     }
                 }
             }
