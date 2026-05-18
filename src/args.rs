@@ -111,7 +111,7 @@ pub fn parse() -> Args {
     };
 
     if test_animation.is_some() {
-        test_all_animations = false;
+        test_all_animations = true;
     }
 
     Args { action, debug_mode, enable_dbus, log_file, test_animation, test_all_animations }

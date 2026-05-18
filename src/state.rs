@@ -156,10 +156,13 @@ impl NotificationState {
         app.draw_text_with_signal(&text, config, Some(sig), &self.draw_state);
         self.animating = sig.animation != crate::config::Animation::None;
         self.current_signal_idx = sig_idx;
+        // Buffer after animation completes before hiding the surface.
+        // Must be generous: the animation timer isn't reset on notification show,
+        // and accumulated timer jitter over many frames can delay completion.
         let hide_delay = if sig.duration == 0 {
             std::time::Duration::MAX
         } else if sig.animation != crate::config::Animation::None {
-            std::time::Duration::from_millis(sig.duration * 1000 + 100)
+            std::time::Duration::from_millis(sig.duration * 1000 + 500)
         } else {
             std::time::Duration::from_secs(sig.duration)
         };

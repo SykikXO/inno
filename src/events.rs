@@ -413,4 +413,114 @@ mod tests {
         assert_eq!(event.format.message, "{percentage}%");
         assert_eq!(event.conditions.debounce_ms, 1000);
     }
+
+    #[test]
+    fn test_match_rule_path_and_prefix_both_set() {
+        // When both path and path_prefix are set, both must match
+        let rule = MatchRule {
+            interface: None,
+            member: None,
+            path: Some("/org/freedesktop/UPower/devices/battery_BAT0".into()),
+            path_prefix: Some("/org/freedesktop/UPower/devices".into()),
+            arg0: None,
+            sender: None,
+        };
+        // Exact path matches both
+        assert!(rule.matches("any", "any", "/org/freedesktop/UPower/devices/battery_BAT0"));
+        // Wrong exact path fails even though prefix matches
+        assert!(!rule.matches("any", "any", "/org/freedesktop/UPower/devices/battery_BAT1"));
+    }
+
+    #[test]
+    fn test_match_rule_member_mismatch() {
+        let rule = MatchRule {
+            interface: Some("org.freedesktop.DBus.Properties".into()),
+            member: Some("PropertiesChanged".into()),
+            path: None,
+            path_prefix: None,
+            arg0: None,
+            sender: None,
+        };
+        assert!(!rule.matches("org.freedesktop.DBus.Properties", "Get", "/any"));
+    }
+
+    #[test]
+    fn test_template_multiple_values() {
+        let mut values = HashMap::new();
+        values.insert("name".into(), "AirPods".into());
+        values.insert("state".into(), "connected".into());
+        values.insert("percentage".into(), "85".into());
+
+        let tmpl = Template::parse("{name} {state} at {percentage}%");
+        assert_eq!(tmpl.render(&values), "AirPods connected at 85%");
+    }
+
+    #[test]
+    fn test_template_empty_values_map() {
+        let values = HashMap::new();
+        let tmpl = Template::parse("{a} and {b}");
+        // Missing keys should be rendered as {key}
+        assert_eq!(tmpl.render(&values), "{a} and {b}");
+    }
+
+    #[test]
+    fn test_template_literal_only() {
+        let values = HashMap::new();
+        let tmpl = Template::parse("no placeholders here");
+        assert_eq!(tmpl.render(&values), "no placeholders here");
+    }
+
+    #[test]
+    fn test_template_empty_input() {
+        let values = HashMap::new();
+        let tmpl = Template::parse("");
+        assert_eq!(tmpl.render(&values), "");
+    }
+
+    #[test]
+    fn test_match_string_with_sender() {
+        let rule = MatchRule {
+            interface: None,
+            member: None,
+            path: None,
+            path_prefix: None,
+            arg0: None,
+            sender: Some("org.bluez".into()),
+        };
+        let s = rule.to_match_string();
+        assert!(s.contains("sender='org.bluez'"));
+        assert!(s.contains("type='signal'"));
+    }
+
+    #[test]
+    fn test_match_string_no_path_prefix() {
+        // path_prefix should NOT appear in the match string (handled in matches() instead)
+        let rule = MatchRule {
+            interface: None,
+            member: None,
+            path: None,
+            path_prefix: Some("/org/freedesktop/UPower".into()),
+            arg0: None,
+            sender: None,
+        };
+        let s = rule.to_match_string();
+        assert!(!s.contains("path_namespace"));
+        assert!(!s.contains("/org/freedesktop/UPower"));
+    }
+
+    #[test]
+    fn test_builtin_event_has_extract_fields() {
+        let event = builtin_battery_event();
+        assert_eq!(event.extract.get("percentage"), Some(&"Percentage".to_string()));
+        assert_eq!(event.extract.get("state"), Some(&"State".to_string()));
+    }
+
+    #[test]
+    fn test_builtin_event_state_map() {
+        let event = builtin_battery_event();
+        assert_eq!(event.state_map.get("1"), Some(&"charging".to_string()));
+        assert_eq!(event.state_map.get("2"), Some(&"discharging".to_string()));
+        assert_eq!(event.state_map.get("4"), Some(&"full".to_string()));
+        assert_eq!(event.state_map.get("3"), None); // Not mapped
+    }
 }

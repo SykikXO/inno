@@ -121,4 +121,59 @@ mod tests {
         assert!((pct - 75.0).abs() < 0.01);
         assert_eq!(state, "charging");
     }
+
+    #[test]
+    fn test_aggregate_empty_all_modes() {
+        let devices = HashMap::new();
+        for mode in [
+            config::BatteryMode::First,
+            config::BatteryMode::Highest,
+            config::BatteryMode::Lowest,
+            config::BatteryMode::Combined,
+        ] {
+            let (pct, state) = aggregate_battery_state(&devices, &mode);
+            assert!((pct - 100.0).abs() < 0.01, "Empty devices should return 100% for {:?}", mode);
+            assert_eq!(state, "unknown", "Empty devices should return unknown for {:?}", mode);
+        }
+    }
+
+    #[test]
+    fn test_aggregate_combined_all_full() {
+        let mut devices = HashMap::new();
+        devices.insert("/bat0".into(), (100.0, "full".into()));
+        devices.insert("/bat1".into(), (100.0, "full".into()));
+
+        let (pct, state) = aggregate_battery_state(&devices, &config::BatteryMode::Combined);
+        assert!((pct - 100.0).abs() < 0.01);
+        // Neither charging nor discharging, should fall through to first device's state
+        assert_eq!(state, "full");
+    }
+
+    #[test]
+    fn test_aggregate_three_devices() {
+        let mut devices = HashMap::new();
+        devices.insert("/bat0".into(), (90.0, "discharging".into()));
+        devices.insert("/bat1".into(), (60.0, "discharging".into()));
+        devices.insert("/bat2".into(), (30.0, "discharging".into()));
+
+        let (pct, state) = aggregate_battery_state(&devices, &config::BatteryMode::Combined);
+        assert!((pct - 60.0).abs() < 0.01); // Average of 90, 60, 30
+        assert_eq!(state, "discharging");
+
+        let (pct_h, _) = aggregate_battery_state(&devices, &config::BatteryMode::Highest);
+        assert!((pct_h - 90.0).abs() < 0.01);
+
+        let (pct_l, _) = aggregate_battery_state(&devices, &config::BatteryMode::Lowest);
+        assert!((pct_l - 30.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_aggregate_highest_equal_values() {
+        let mut devices = HashMap::new();
+        devices.insert("/bat0".into(), (50.0, "discharging".into()));
+        devices.insert("/bat1".into(), (50.0, "charging".into()));
+
+        let (pct, _) = aggregate_battery_state(&devices, &config::BatteryMode::Highest);
+        assert!((pct - 50.0).abs() < 0.01);
+    }
 }

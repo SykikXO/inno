@@ -333,7 +333,9 @@ async fn main() -> anyhow::Result<()> {
                 state.draw_state.reset();
                 app.draw_text_with_signal(&text, &config, Some(&test_signal), &state.draw_state);
                 current_test_signal = Some(test_signal);
-                hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(10)));
+                // Don't set a competing hide_timer in test mode — the test_timer handles cycling.
+                // Setting one here with exact duration kills the fade-out before it completes.
+                hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
 
                 if let Some(fixed_idx) = test_animation {
                     test_anim_idx = fixed_idx;

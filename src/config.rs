@@ -974,4 +974,199 @@ mod tests {
         let tmpl = FormatTemplate::default();
         assert_eq!(tmpl.render("", "Test", Some(42.0)), "Test 42%");
     }
+
+    #[test]
+    fn test_find_signal_idx_exact_threshold_charging() {
+        let cfg = AppConfig {
+            signals: vec![Signal {
+                message: "at80".into(),
+                icon: "".into(),
+                icon_size: 24.0,
+                color: (0.0, 1.0, 0.0, 1.0),
+                color_name: "green".into(),
+                threshold: 80.0,
+                state_filter: "charging".into(),
+                animation: Animation::None,
+                duration: 5,
+                sound: None,
+            }],
+            ..Default::default()
+        };
+        // pct == threshold should match (pct >= threshold for charging)
+        assert_eq!(cfg.find_signal_idx(80.0, "charging"), Some(0));
+        // Just below should NOT match
+        assert_eq!(cfg.find_signal_idx(79.9, "charging"), None);
+    }
+
+    #[test]
+    fn test_find_signal_idx_exact_threshold_discharging() {
+        let cfg = AppConfig {
+            signals: vec![Signal {
+                message: "at15".into(),
+                icon: "".into(),
+                icon_size: 24.0,
+                color: (1.0, 0.0, 0.0, 1.0),
+                color_name: "red".into(),
+                threshold: 15.0,
+                state_filter: "discharging".into(),
+                animation: Animation::None,
+                duration: 5,
+                sound: None,
+            }],
+            ..Default::default()
+        };
+        // pct == threshold should match (pct <= threshold for discharging)
+        assert_eq!(cfg.find_signal_idx(15.0, "discharging"), Some(0));
+        // Just above should NOT match
+        assert_eq!(cfg.find_signal_idx(15.1, "discharging"), None);
+    }
+
+    #[test]
+    fn test_find_signal_idx_no_signals() {
+        let cfg = AppConfig::default();
+        assert_eq!(cfg.find_signal_idx(50.0, "charging"), None);
+        assert_eq!(cfg.find_signal_idx(50.0, "discharging"), None);
+    }
+
+    #[test]
+    fn test_find_signal_idx_wrong_state() {
+        let cfg = AppConfig {
+            signals: vec![Signal {
+                message: "charging only".into(),
+                icon: "".into(),
+                icon_size: 24.0,
+                color: (0.0, 1.0, 0.0, 1.0),
+                color_name: "green".into(),
+                threshold: 0.0,
+                state_filter: "charging".into(),
+                animation: Animation::None,
+                duration: 5,
+                sound: None,
+            }],
+            ..Default::default()
+        };
+        // Should not match discharging state
+        assert_eq!(cfg.find_signal_idx(50.0, "discharging"), None);
+        // Should match charging
+        assert_eq!(cfg.find_signal_idx(50.0, "charging"), Some(0));
+    }
+
+    #[test]
+    fn test_find_signal_idx_case_insensitive_state() {
+        let cfg = AppConfig {
+            signals: vec![Signal {
+                message: "test".into(),
+                icon: "".into(),
+                icon_size: 24.0,
+                color: (1.0, 1.0, 1.0, 1.0),
+                color_name: "white".into(),
+                threshold: 50.0,
+                state_filter: "charging".into(),
+                animation: Animation::None,
+                duration: 5,
+                sound: None,
+            }],
+            ..Default::default()
+        };
+        // State matching should be case-insensitive
+        assert_eq!(cfg.find_signal_idx(60.0, "Charging"), Some(0));
+        assert_eq!(cfg.find_signal_idx(60.0, "CHARGING"), Some(0));
+    }
+
+    #[test]
+    fn test_anchor_parse_with_whitespace() {
+        let a = Anchor::parse("  center , top , 15 ");
+        assert!(matches!(a.h, HAnchor::Center));
+        assert!(matches!(a.v, VAnchor::Top));
+        assert_eq!(a.margin_h, 15);
+    }
+
+    #[test]
+    fn test_format_template_unclosed_brace() {
+        let tmpl = FormatTemplate::parse("hello {world");
+        // Unclosed brace should be treated as literal
+        assert_eq!(tmpl.render("", "", None), "hello {world");
+    }
+
+    #[test]
+    fn test_format_template_empty_string() {
+        let tmpl = FormatTemplate::parse("");
+        assert_eq!(tmpl.render("icon", "msg", Some(50.0)), "");
+    }
+
+    #[test]
+    fn test_format_template_consecutive_placeholders() {
+        let tmpl = FormatTemplate::parse("{icon}{message}");
+        assert_eq!(tmpl.render("A", "B", None), "AB");
+    }
+
+    #[test]
+    fn test_format_template_percent_zero() {
+        let tmpl = FormatTemplate::parse("{percent}%");
+        assert_eq!(tmpl.render("", "", Some(0.0)), "0%");
+    }
+
+    #[test]
+    fn test_validate_negative_threshold() {
+        let cfg = AppConfig {
+            signals: vec![Signal {
+                message: "test".into(),
+                icon: "".into(),
+                icon_size: 24.0,
+                color: (1.0, 1.0, 1.0, 1.0),
+                color_name: "white".into(),
+                threshold: -5.0,
+                state_filter: "any".into(),
+                animation: Animation::None,
+                duration: 5,
+                sound: None,
+            }],
+            ..Default::default()
+        };
+        let (errors, _) = cfg.validate();
+        assert!(errors.iter().any(|e| e.contains("threshold")));
+    }
+
+    #[test]
+    fn test_validate_empty_message() {
+        let cfg = AppConfig {
+            signals: vec![Signal {
+                message: "".into(),
+                icon: "".into(),
+                icon_size: 24.0,
+                color: (1.0, 1.0, 1.0, 1.0),
+                color_name: "white".into(),
+                threshold: 50.0,
+                state_filter: "any".into(),
+                animation: Animation::None,
+                duration: 5,
+                sound: None,
+            }],
+            ..Default::default()
+        };
+        let (errors, _) = cfg.validate();
+        assert!(errors.iter().any(|e| e.contains("message")));
+    }
+
+    #[test]
+    fn test_validate_high_fps_warning() {
+        let cfg = AppConfig {
+            fps: 240,
+            signals: vec![Signal {
+                message: "test".into(),
+                icon: "".into(),
+                icon_size: 24.0,
+                color: (1.0, 1.0, 1.0, 1.0),
+                color_name: "white".into(),
+                threshold: 50.0,
+                state_filter: "any".into(),
+                animation: Animation::None,
+                duration: 5,
+                sound: None,
+            }],
+            ..Default::default()
+        };
+        let (_, warnings) = cfg.validate();
+        assert!(warnings.iter().any(|w| w.contains("fps")));
+    }
 }

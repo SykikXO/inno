@@ -76,13 +76,10 @@ impl DrawState {
                 self.visible = true;
                 self.alpha = 1.0;
                 self.offset_x = 0.0;
-                // Parabolic bounce with exponential decay
                 let period = 0.5 * fps; // Snappy 0.5s period
                 let local_t = (t % period) / period;
                 let height = 4.0 * local_t * (1.0 - local_t); // Parabola: y = 4x(1-x)
                 let bounce_num = (t / period).floor();
-                // Decay factor is 1.0 (no decay) — bounce continues at full height.
-                // Change to e.g. 0.8 if you want exponential decay over time.
                 let decay = 1.0_f64.powf(bounce_num);
                 self.offset_y = -height * 35.0 * decay;
             }
@@ -388,5 +385,124 @@ mod tests {
         assert!((state.alpha - 1.0).abs() < f64::EPSILON);
         assert!((state.offset_x - 0.0).abs() < f64::EPSILON);
         assert!((state.offset_y - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_bounce_first_frame_has_offset() {
+        // Regression: bounce_num=0 must NOT zero out offset_y
+        let mut state = DrawState::default();
+        state.tick(&config::Animation::Bounce, 300.0, 60.0);
+        // Frame 1 is early in the first period, should have nonzero bounce
+        assert!(state.offset_y < 0.0, "First bounce frame should have negative offset, got {}", state.offset_y);
+    }
+
+    #[test]
+    fn test_bounce_constant_height() {
+        // Bounce uses decay=1.0 (no decay), so all periods should have the same peak height
+        let fps = 60.0;
+        let period = (0.5 * fps) as u32; // 30 frames per period
+
+        // Scan for peak in the first bounce period
+        let mut state = DrawState::default();
+        let mut first_peak = 0.0_f64;
+        for _ in 0..period {
+            state.tick(&config::Animation::Bounce, 300.0, fps);
+            if state.offset_y < first_peak {
+                first_peak = state.offset_y;
+            }
+        }
+
+        // Scan for peak in the third bounce period
+        let mut third_peak = 0.0_f64;
+        for _ in 0..period {
+            state.tick(&config::Animation::Bounce, 300.0, fps);
+        }
+        for _ in 0..period {
+            state.tick(&config::Animation::Bounce, 300.0, fps);
+            if state.offset_y < third_peak {
+                third_peak = state.offset_y;
+            }
+        }
+
+        assert!(first_peak < 0.0, "Bounce should have negative peak, got {}", first_peak);
+        assert!((first_peak - third_peak).abs() < 0.01,
+            "Bounce height should be constant: first={}, third={}", first_peak, third_peak);
+    }
+
+    #[test]
+    fn test_bounce_never_goes_positive() {
+        // Bounce offset_y should always be <= 0 (upward)
+        let mut state = DrawState::default();
+        for _ in 0..500 {
+            state.tick(&config::Animation::Bounce, 300.0, 60.0);
+            assert!(state.offset_y <= 0.0,
+                "Bounce offset_y should never be positive, got {} at frame {}", state.offset_y, state.frame);
+        }
+    }
+
+    #[test]
+    fn test_fade_alpha_never_exceeds_bounds() {
+        let mut state = DrawState::default();
+        let total_frames = 180.0;
+        let fps = 60.0;
+        for _ in 0..250 {
+            state.tick(&config::Animation::Fade, total_frames, fps);
+            assert!(state.alpha >= 0.0 && state.alpha <= 1.0,
+                "Fade alpha out of bounds: {} at frame {}", state.alpha, state.frame);
+        }
+    }
+
+    #[test]
+    fn test_fade_fully_visible_in_middle() {
+        let mut state = DrawState::default();
+        let total_frames = 120.0;
+        // Advance to middle (past 25% fade-in, before 75% fade-out start)
+        for _ in 0..60 {
+            state.tick(&config::Animation::Fade, total_frames, 60.0);
+        }
+        assert!((state.alpha - 1.0).abs() < f64::EPSILON,
+            "Fade should be fully visible at midpoint, got {}", state.alpha);
+    }
+
+    #[test]
+    fn test_pulse_stays_bounded_long_run() {
+        let mut state = DrawState::default();
+        for _ in 0..1000 {
+            state.tick(&config::Animation::Pulse, 300.0, 60.0);
+            assert!(state.alpha >= 0.6 && state.alpha <= 1.0,
+                "Pulse alpha out of range: {} at frame {}", state.alpha, state.frame);
+            assert!(state.visible);
+        }
+    }
+
+    #[test]
+    fn test_slide_right_converges_to_zero() {
+        let mut state = DrawState::default();
+        // After 20 frames at 0.05 progress/frame, progress = 1.0
+        for _ in 0..25 {
+            state.tick(&config::Animation::SlideRight, 300.0, 60.0);
+        }
+        assert!((state.offset_x - 0.0).abs() < f64::EPSILON,
+            "SlideRight should converge to 0, got {}", state.offset_x);
+    }
+
+    #[test]
+    fn test_slide_left_converges_to_zero() {
+        let mut state = DrawState::default();
+        for _ in 0..25 {
+            state.tick(&config::Animation::SlideLeft, 300.0, 60.0);
+        }
+        assert!((state.offset_x - 0.0).abs() < f64::EPSILON,
+            "SlideLeft should converge to 0, got {}", state.offset_x);
+    }
+
+    #[test]
+    fn test_draw_state_default() {
+        let state = DrawState::default();
+        assert_eq!(state.frame, 0);
+        assert!(state.visible);
+        assert!((state.alpha - 1.0).abs() < f64::EPSILON);
+        assert!((state.offset_x).abs() < f64::EPSILON);
+        assert!((state.offset_y).abs() < f64::EPSILON);
     }
 }
