@@ -29,6 +29,8 @@ green = [0.0, 1.0, 0.0, 1.0]
 violet = [0.6, 0.4, 0.8, 1.0]
 
 # Signals triggered based on battery state
+# Sound files are bundled in assets/sounds/ and should be copied to
+# ~/.config/inno/sounds/ for local use.
 [[signal]]
 message = "Discharging"
 icon = ""
@@ -38,7 +40,7 @@ threshold = 100
 state = "discharging"
 animation = "fade"
 duration = 3
-sound = "/home/sykik/.config/inno/sounds/Windows Hardware Remove.wav"
+sound = "assets/sounds/hardware_remove.wav"
 
 [[signal]]
 message = "Charging"
@@ -49,7 +51,7 @@ threshold = 0
 state = "charging"
 animation = "fade"
 duration = 3
-sound = "/home/sykik/.config/inno/sounds/Windows Hardware Insert.wav"
+sound = "assets/sounds/hardware_insert.wav"
 
 [[signal]]
 message = "Critical!"
@@ -59,8 +61,8 @@ color = "red"
 threshold = 15
 state = "discharging"
 animation = "blink"
-duration = 60
-sound = "/home/sykik/.config/inno/sounds/Windows Battery Critical.wav"
+duration = 0
+sound = "assets/sounds/battery_critical.wav"
 
 [[signal]]
 message = "Low Battery!"
@@ -71,7 +73,7 @@ threshold = 25
 state = "discharging"
 animation = "pulse"
 duration = 30
-sound = "/home/sykik/.config/inno/sounds/Windows Battery Low.wav"
+sound = "assets/sounds/battery_low.wav"
 
 [[signal]]
 message = "Optimal!"
@@ -82,7 +84,7 @@ threshold = 80
 state = "charging"
 animation = "bounce"
 duration = 30
-sound = "/home/sykik/.config/inno/sounds/Windows Notify.wav"
+sound = "assets/sounds/notify.wav"
 
 [[signal]]
 message = "{message}"
@@ -93,7 +95,7 @@ threshold = 100
 state = "connected"
 animation = "fade"
 duration = 3
-sound = "/home/sykik/.config/inno/sounds/Windows Notify.wav"
+sound = "assets/sounds/notify.wav"
 
 [[signal]]
 message = "{message}"
@@ -104,4 +106,4 @@ threshold = 100
 state = "disconnected"
 animation = "fade"
 duration = 3
-sound = "/home/sykik/.config/inno/sounds/Windows Ding.wav"
+sound = "assets/sounds/disconnect.wav"

@@ -24,4 +24,7 @@ package() {
     install -Dm644 "$f" "${pkgdir}/etc/xdg/inno/${f}"
   done
   install -Dm644 inno.service "${pkgdir}/usr/lib/systemd/user/inno.service"
+  for f in assets/sounds/*.wav; do
+    [ -f "$f" ] && install -Dm644 "$f" "${pkgdir}/etc/xdg/inno/${f}"
+  done
 }
