@@ -6,10 +6,6 @@ pub fn aggregate_battery_state(
     devices: &HashMap<String, (f64, String)>,
     mode: &config::BatteryMode,
 ) -> (f64, String) {
-    if devices.is_empty() {
-        return (100.0, "unknown".to_string());
-    }
-
     // devices is a HashMap, so iteration order is arbitrary. Sort by device
     // name so `first` and the combined-mode tie-break are reproducible.
     let mut names: Vec<&String> = devices.keys().collect();
@@ -20,6 +16,7 @@ pub fn aggregate_battery_state(
     // letting it win an ordering comparison via partial_cmp returning None.
     let usable: Vec<&(f64, String)> =
         ordered.iter().copied().filter(|(pct, _)| !pct.is_nan()).collect();
+    // No device, or only NaN readings from a malformed UPower payload.
     if usable.is_empty() {
         return (100.0, "unknown".to_string());
     }

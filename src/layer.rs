@@ -274,7 +274,7 @@ impl LayerApp {
         // asset would reach FrameTick::Finished and never be told to loop.
         let looping = asset.loop_ || asset.on_complete == crate::config::OnComplete::Loop;
 
-        match AnimPlayer::load(&asset.source, asset.fps, looping, asset.display, target) {
+        match AnimPlayer::load(&asset.source, looping, target) {
             Ok(player) => {
                 self.anim_players.insert(key.to_string(), player);
                 true

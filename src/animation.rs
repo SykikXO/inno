@@ -32,9 +32,7 @@ pub struct AnimPlayer {
     paths: Vec<PathBuf>,
     /// Ring of decoded frames, each tagged with the position it holds.
     ring: Vec<Option<(usize, ImageSurface)>>,
-    pub fps: u64,
     pub loop_: bool,
-    pub display: crate::config::DisplayMode,
     pub frame_idx: usize,
     /// Dimensions frames are decoded at, which is the display size capped at
     /// the source size. Never larger than `source_w`/`source_h`.
@@ -52,9 +50,7 @@ impl std::fmt::Debug for AnimPlayer {
         f.debug_struct("AnimPlayer")
             .field("frames", &self.paths.len())
             .field("decoded", &self.ring.iter().filter(|s| s.is_some()).count())
-            .field("fps", &self.fps)
             .field("loop_", &self.loop_)
-            .field("display", &self.display)
             .field("frame_idx", &self.frame_idx)
             .field("frame_w", &self.frame_w)
             .field("frame_h", &self.frame_h)
@@ -70,9 +66,7 @@ const PNG_MAGIC: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 impl AnimPlayer {
     pub fn load<P: AsRef<Path>>(
         source: P,
-        fps: u64,
         loop_: bool,
-        display: crate::config::DisplayMode,
         target: TargetSize,
     ) -> Result<Self> {
         let path = source.as_ref();
@@ -126,14 +120,10 @@ impl AnimPlayer {
         let frame_w = ((source_w as f64 * factor).round() as i32).max(1);
         let frame_h = ((source_h as f64 * factor).round() as i32).max(1);
 
-        // A zero fps would make the frame period divide to zero and spin the
-        // event loop.
         let mut player = Self {
             paths: entries,
             ring: vec![None; LOOKAHEAD + 1],
-            fps: fps.max(1),
             loop_,
-            display,
             frame_idx: 0,
             frame_w,
             frame_h,
@@ -307,24 +297,22 @@ fn nat_compare(a: &Path, b: &Path) -> std::cmp::Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::DisplayMode;
     use crate::testutil::TempDir;
     use std::cmp::Ordering;
 
-    const FPS: u64 = 30;
     /// Small enough that nothing is downscaled.
     const NATURAL: TargetSize = TargetSize::Scaled(1.0);
 
-    fn load(dir: &Path, fps: u64, loop_: bool, target: TargetSize) -> AnimPlayer {
-        AnimPlayer::load(dir, fps, loop_, DisplayMode::Anim, target).unwrap()
+    fn load(dir: &Path, loop_: bool, target: TargetSize) -> AnimPlayer {
+        AnimPlayer::load(dir, loop_, target).unwrap()
     }
 
     /// Builds a player over a real frame set. The directory has to outlive the
     /// player because frames are read from it lazily, so it is returned too.
-    fn player(frames: usize, fps: u64, loop_: bool) -> (TempDir, AnimPlayer) {
+    fn player(frames: usize, loop_: bool) -> (TempDir, AnimPlayer) {
         let dir = TempDir::new("anim-sm");
         dir.write_frames(frames);
-        let player = load(dir.path(), fps, loop_, NATURAL);
+        let player = load(dir.path(), loop_, NATURAL);
         (dir, player)
     }
 
@@ -340,9 +328,8 @@ mod tests {
         let dir = TempDir::new("anim-load");
         dir.write_frames(5);
 
-        let player = load(dir.path(), FPS, true, NATURAL);
+        let player = load(dir.path(), true, NATURAL);
         assert_eq!(player.paths.len(), 5);
-        assert_eq!(player.fps, FPS);
         assert!(player.loop_);
         assert_eq!(player.frame_idx, 0);
         assert!(!player.is_done());
@@ -357,8 +344,8 @@ mod tests {
         let large = TempDir::new("anim-lazy-large");
         large.write_frames(120);
 
-        let few = load(small.path(), FPS, true, NATURAL);
-        let many = load(large.path(), FPS, true, NATURAL);
+        let few = load(small.path(), true, NATURAL);
+        let many = load(large.path(), true, NATURAL);
 
         assert_eq!(many.paths.len(), 120);
         assert_eq!(
@@ -374,7 +361,7 @@ mod tests {
         let dir = TempDir::new("anim-dims");
         dir.write_frames(2);
 
-        let player = load(dir.path(), FPS, true, NATURAL);
+        let player = load(dir.path(), true, NATURAL);
         assert_eq!((player.frame_w, player.frame_h), (2, 2));
     }
 
@@ -390,7 +377,7 @@ mod tests {
             .write_to_png(&mut std::fs::File::create(dir.join("frame_0001.png")).unwrap())
             .unwrap();
 
-        let player = load(dir.path(), FPS, true, NATURAL);
+        let player = load(dir.path(), true, NATURAL);
         assert_eq!(player.paths.len(), 2);
         assert_eq!((player.frame_w, player.frame_h), (2, 2));
     }
@@ -402,7 +389,6 @@ mod tests {
         let dir = TempDir::new("anim-fps0");
         dir.write_frames(2);
 
-        assert_eq!(load(dir.path(), 0, true, NATURAL).fps, 1);
     }
 
     #[test]
@@ -415,7 +401,7 @@ mod tests {
         std::fs::write(dir.join(".png"), b"ignore me").unwrap();
         std::fs::create_dir(dir.join("subdir")).unwrap();
 
-        assert_eq!(load(dir.path(), FPS, true, NATURAL).paths.len(), 2);
+        assert_eq!(load(dir.path(), true, NATURAL).paths.len(), 2);
     }
 
     #[test]
@@ -427,21 +413,21 @@ mod tests {
             .unwrap();
         std::fs::copy(dir.join("a.PNG"), dir.join("b.png")).unwrap();
 
-        assert_eq!(load(dir.path(), FPS, true, NATURAL).paths.len(), 2);
+        assert_eq!(load(dir.path(), true, NATURAL).paths.len(), 2);
     }
 
     #[test]
     fn test_load_rejects_missing_directory() {
         let dir = TempDir::new("anim-absent");
         let missing = dir.join("nope");
-        let err = AnimPlayer::load(&missing, FPS, true, DisplayMode::Anim, NATURAL).unwrap_err();
+        let err = AnimPlayer::load(&missing, true, NATURAL).unwrap_err();
         assert!(err.to_string().contains("not a directory"), "got: {}", err);
     }
 
     #[test]
     fn test_load_rejects_directory_with_no_frames() {
         let dir = TempDir::new("anim-empty");
-        let err = AnimPlayer::load(dir.path(), FPS, true, DisplayMode::Anim, NATURAL).unwrap_err();
+        let err = AnimPlayer::load(dir.path(), true, NATURAL).unwrap_err();
         assert!(err.to_string().contains("No PNG files"), "got: {}", err);
     }
 
@@ -453,7 +439,7 @@ mod tests {
         dir.write_frames(2);
         std::fs::write(dir.join("frame_0001.png"), b"definitely not a png").unwrap();
 
-        let err = AnimPlayer::load(dir.path(), FPS, true, DisplayMode::Anim, NATURAL).unwrap_err();
+        let err = AnimPlayer::load(dir.path(), true, NATURAL).unwrap_err();
         assert!(err.to_string().contains("not a PNG"), "got: {}", err);
     }
 
@@ -469,7 +455,7 @@ mod tests {
         bytes.truncate(20);
         std::fs::write(dir.join("frame_0001.png"), bytes).unwrap();
 
-        let mut player = load(dir.path(), FPS, true, NATURAL);
+        let mut player = load(dir.path(), true, NATURAL);
         assert!(player.frame().is_ok(), "frame 0 should be fine");
         player.tick();
         assert!(player.frame().is_err(), "frame 1 should report the failure");
@@ -482,7 +468,7 @@ mod tests {
         let dir = TempDir::new("anim-downscale");
         write_sized_frames(dir.path(), 64, 32, 3);
 
-        let player = load(dir.path(), FPS, true, TargetSize::LongestEdge(16));
+        let player = load(dir.path(), true, TargetSize::LongestEdge(16));
         // Long edge becomes 16, the short edge halves with it.
         assert_eq!((player.frame_w, player.frame_h), (16, 8));
     }
@@ -492,7 +478,7 @@ mod tests {
         let dir = TempDir::new("anim-scaledown");
         write_sized_frames(dir.path(), 40, 40, 2);
 
-        let player = load(dir.path(), FPS, true, TargetSize::Scaled(0.5));
+        let player = load(dir.path(), true, TargetSize::Scaled(0.5));
         assert_eq!((player.frame_w, player.frame_h), (20, 20));
     }
 
@@ -506,7 +492,7 @@ mod tests {
         write_sized_frames(dir.path(), 8, 8, 1);
 
         for target in [TargetSize::Scaled(4.0), TargetSize::LongestEdge(64)] {
-            let player = load(dir.path(), FPS, true, target);
+            let player = load(dir.path(), true, target);
             assert_eq!((player.frame_w, player.frame_h), (8, 8));
         }
     }
@@ -516,7 +502,7 @@ mod tests {
         let dir = TempDir::new("anim-verify");
         write_sized_frames(dir.path(), 64, 32, 2);
 
-        let mut player = load(dir.path(), FPS, true, TargetSize::LongestEdge(16));
+        let mut player = load(dir.path(), true, TargetSize::LongestEdge(16));
         let surface = player.frame().unwrap();
         assert_eq!((surface.width(), surface.height()), (16, 8));
     }
@@ -560,7 +546,7 @@ mod tests {
 
     #[test]
     fn test_tick_wraps_when_looping() {
-        let (_dir, mut player) = player(3, FPS, true);
+        let (_dir, mut player) = player(3, true);
         for expected in [1, 2, 0, 1, 2] {
             player.tick();
             assert_eq!(player.frame_idx, expected);
@@ -570,7 +556,7 @@ mod tests {
 
     #[test]
     fn test_tick_stops_at_last_frame_when_not_looping() {
-        let (_dir, mut player) = player(3, FPS, false);
+        let (_dir, mut player) = player(3, false);
         for expected in [1, 2] {
             player.tick();
             assert_eq!(player.frame_idx, expected);
@@ -584,7 +570,7 @@ mod tests {
 
     #[test]
     fn test_tick_is_a_noop_once_done() {
-        let (_dir, mut player) = player(2, FPS, false);
+        let (_dir, mut player) = player(2, false);
         player.tick();
         player.tick();
         assert!(player.is_done());
@@ -595,7 +581,7 @@ mod tests {
 
     #[test]
     fn test_single_frame_looping_never_completes() {
-        let (_dir, mut player) = player(1, FPS, true);
+        let (_dir, mut player) = player(1, true);
         for _ in 0..5 {
             player.tick();
         }
@@ -605,7 +591,7 @@ mod tests {
 
     #[test]
     fn test_single_frame_non_looping_completes_on_first_tick() {
-        let (_dir, mut player) = player(1, FPS, false);
+        let (_dir, mut player) = player(1, false);
         player.tick();
         assert_eq!(player.frame_idx, 0);
         assert!(player.is_done());
@@ -613,7 +599,7 @@ mod tests {
 
     #[test]
     fn test_reset_rearms_a_completed_animation() {
-        let (_dir, mut player) = player(3, FPS, false);
+        let (_dir, mut player) = player(3, false);
         for _ in 0..5 {
             player.tick();
         }
@@ -634,7 +620,7 @@ mod tests {
         for i in 0..9u8 {
             write_tagged_frame(dir.path(), &format!("f_{i}.png"), i);
         }
-        let mut player = load(dir.path(), FPS, true, NATURAL);
+        let mut player = load(dir.path(), true, NATURAL);
 
         for expected in (0..9).chain(0..9).chain(0..9) {
             player.frame().expect("the playhead's frame should be resident");
@@ -652,7 +638,7 @@ mod tests {
     fn test_resident_frames_stay_bounded_over_a_long_playthrough() {
         // The ring is what stops memory growing with the frame count, which is
         // what makes decoding every frame up front unnecessary.
-        let (_dir, mut player) = player(200, FPS, true);
+        let (_dir, mut player) = player(200, true);
         let mut widest = 0;
         for _ in 0..500 {
             player.tick();
@@ -667,7 +653,7 @@ mod tests {
 
     #[test]
     fn test_every_frame_decodes_on_the_way_past() {
-        let (_dir, mut player) = player(30, FPS, true);
+        let (_dir, mut player) = player(30, true);
         for _ in 0..30 {
             let surface = player.frame().expect("every frame should decode");
             assert_eq!((surface.width(), surface.height()), (2, 2));
@@ -677,7 +663,7 @@ mod tests {
 
     #[test]
     fn test_current_frame_is_always_in_bounds() {
-        let (_dir, mut player) = player(7, FPS, true);
+        let (_dir, mut player) = player(7, true);
         for _ in 0..100 {
             player.tick();
             assert!(player.frame_idx < player.paths.len());
@@ -734,7 +720,7 @@ mod tests {
         write_tagged_frame(dir.path(), "f_2.png", 2);
         write_tagged_frame(dir.path(), "f_1.png", 1);
 
-        let player = load(dir.path(), FPS, true, NATURAL);
+        let player = load(dir.path(), true, NATURAL);
         let order: Vec<u8> = player.paths.iter().map(|p| red_of_file(p)).collect();
         assert_eq!(order, vec![1, 2, 10], "frames should sort numerically");
     }

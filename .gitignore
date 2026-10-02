@@ -25,3 +25,6 @@ Thumbs.db
 
 # Local
 PLAN.md
+
+# Audit trail for long autonomous runs
+.audit/

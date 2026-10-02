@@ -20,82 +20,50 @@ impl Default for DrawState {
     }
 }
 
+/// How far a slide animation still has to travel at frame `t`, in pixels.
+fn slide_offset(t: f64) -> f64 {
+    // Ease out: fast start, slow settle.
+    let eased = 1.0 - (1.0 - (t * 0.05).min(1.0)).powi(3);
+    (1.0 - eased) * 200.0
+}
+
 impl DrawState {
     pub fn tick(&mut self, anim: &Animation, total_frames: f64, fps: f64) {
         self.frame = self.frame.wrapping_add(1);
         let t = self.frame as f64;
+        let (mut visible, mut alpha) = (true, 1.0);
+        let (mut offset_x, mut offset_y) = (0.0, 0.0);
 
         match anim {
-            Animation::Blink => {
-                self.visible = (self.frame / 15).is_multiple_of(2);
-                self.alpha = 1.0;
-                self.offset_x = 0.0;
-                self.offset_y = 0.0;
-            }
-            Animation::Pulse => {
-                self.visible = true;
-                self.alpha = 0.6 + 0.4 * (t * 0.15).sin().abs();
-                self.offset_x = 0.0;
-                self.offset_y = 0.0;
-            }
+            Animation::Blink => visible = (self.frame / 15).is_multiple_of(2),
+            Animation::Pulse => alpha = 0.6 + 0.4 * (t * 0.15).sin().abs(),
             Animation::Fade => {
-                self.visible = true;
-                self.offset_x = 0.0;
-                self.offset_y = 0.0;
                 // Fade in/out each take 25% of total duration for a smooth, noticeable transition
                 let fade_duration = (total_frames * 0.25).max(1.0);
                 let fade_out_start = total_frames - fade_duration;
-
-                if t < fade_duration {
-                    self.alpha = (t / fade_duration).min(1.0); // Fade in
+                alpha = if t < fade_duration {
+                    (t / fade_duration).min(1.0) // Fade in
                 } else if t >= fade_out_start {
-                    self.alpha = ((total_frames - t) / fade_duration).clamp(0.0, 1.0); // Fade out
+                    ((total_frames - t) / fade_duration).clamp(0.0, 1.0) // Fade out
                 } else {
-                    self.alpha = 1.0; // Fully visible
-                }
+                    1.0 // Fully visible
+                };
             }
-            Animation::SlideRight => {
-                self.visible = true;
-                self.alpha = 1.0;
-                // Slide in from right, ease out
-                let progress = (t * 0.05).min(1.0);
-                let eased = 1.0 - (1.0 - progress).powi(3);
-                self.offset_x = -(1.0 - eased) * 200.0;
-                self.offset_y = 0.0;
-            }
-            Animation::SlideLeft => {
-                self.visible = true;
-                self.alpha = 1.0;
-                // Slide in from left, ease out
-                let progress = (t * 0.05).min(1.0);
-                let eased = 1.0 - (1.0 - progress).powi(3);
-                self.offset_x = (1.0 - eased) * 200.0;
-                self.offset_y = 0.0;
-            }
+            Animation::SlideRight => offset_x = -slide_offset(t),
+            Animation::SlideLeft => offset_x = slide_offset(t),
             Animation::Bounce => {
-                self.visible = true;
-                self.alpha = 1.0;
-                self.offset_x = 0.0;
-                let period = 0.5 * fps; // Snappy 0.5s period
+                // Snappy 0.5s period
+                let period = 0.5 * fps;
                 let local_t = (t % period) / period;
-                let height = 4.0 * local_t * (1.0 - local_t); // Parabola: y = 4x(1-x)
-                self.offset_y = -height * 35.0;
+                offset_y = -4.0 * local_t * (1.0 - local_t) * 35.0; // Parabola: y = 4x(1-x)
             }
-            Animation::None => {
-                self.visible = true;
-                self.alpha = 1.0;
-                self.offset_x = 0.0;
-                self.offset_y = 0.0;
-            }
+            Animation::None => {}
         }
+        (self.visible, self.alpha, self.offset_x, self.offset_y) = (visible, alpha, offset_x, offset_y);
     }
 
     pub fn reset(&mut self) {
-        self.frame = 0;
-        self.visible = true;
-        self.alpha = 1.0;
-        self.offset_x = 0.0;
-        self.offset_y = 0.0;
+        *self = Self::default();
     }
 }
 

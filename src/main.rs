@@ -45,13 +45,15 @@ thread_local! {
         const { std::cell::RefCell::new(std::time::Duration::ZERO) };
 }
 
-/// Period between animation frames. `fps` is validated at config load, but clamp
-/// anyway so a bad value cannot produce a zero period and spin the loop.
+/// Period between animation frames at `fps`. The lower bound stops a zero fps
+/// producing a zero period, which would spin the loop. The upper bound stops a
+/// typo like 1000000 producing a 1us period, which spins it just as hard.
+fn frame_period(fps: u64) -> Duration {
+    Duration::from_micros(1_000_000 / fps.clamp(1, 240))
+}
+
 fn frame_delay(config: &AppConfig) -> Duration {
-    // The lower bound stops a zero fps producing a zero period, which would spin
-    // the loop. The upper bound stops a typo like 1000000 producing a 1us
-    // period, which spins it just as hard.
-    Duration::from_micros(1_000_000 / config.fps.clamp(1, 240))
+    frame_period(config.fps)
 }
 
 /// Resolves the signal driving the current notification.
@@ -590,7 +592,7 @@ async fn main() -> anyhow::Result<()> {
                     None
                 };
 
-                let Some(signal) = active_signal(&state, &config, synthetic).cloned() else {
+                let Some(signal) = active_signal(&state, &config, synthetic) else {
                     // A DBus Show with no matching signal still shows text.
                     app.draw_text(text, &config);
                     continue;
@@ -606,7 +608,7 @@ async fn main() -> anyhow::Result<()> {
                 // one. Without this the general path inherits the last frame
                 // animation's rate and plays back at the wrong speed.
                 let wanted = match frame_anim_key.and_then(|key| config.animations.get(key)) {
-                    Some(asset) => Duration::from_micros(1_000_000 / asset.fps.clamp(1, 240)),
+                    Some(asset) => frame_period(asset.fps),
                     None => frame_delay(&config),
                 };
                 set_frame_clock(&mut animation_timer, wanted);
@@ -618,7 +620,7 @@ async fn main() -> anyhow::Result<()> {
                 // The procedural transition advances on every tick, including
                 // while a frame animation drives the content, which is what
                 // lets the two compose.
-                let total_frames = state::transition_frames(&signal, &config);
+                let total_frames = state::transition_frames(signal, &config);
                 state.draw_state.tick(&signal.animation, total_frames, config.fps as f64);
                 if *TRACE {
                     let frame = state.draw_state.frame;
@@ -645,7 +647,7 @@ async fn main() -> anyhow::Result<()> {
                     match app.draw_frame_anim(
                         key,
                         &config,
-                        Some(&signal),
+                        Some(signal),
                         text,
                         &state.draw_state,
                         true,
@@ -670,13 +672,13 @@ async fn main() -> anyhow::Result<()> {
                         FrameTick::Unavailable => {
                             eprintln!("Frame animation '{}' unavailable, showing text", key);
                             app.failed_animations_insert(key);
-                            app.draw_text_with_signal(text, &config, Some(&signal), &state.draw_state);
+                            app.draw_text_with_signal(text, &config, Some(signal), &state.draw_state);
                             continue;
                         }
                     }
                 }
 
-                app.draw_text_with_signal(text, &config, Some(&signal), &state.draw_state);
+                app.draw_text_with_signal(text, &config, Some(signal), &state.draw_state);
             }
 
             _ = &mut hide_timer => {
