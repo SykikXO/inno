@@ -144,3 +144,154 @@ pub fn parse_from<I: IntoIterator<Item = String>>(args: I) -> Args {
 pub fn help_text() -> &'static str {
     HELP
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn argv(args: &[&str]) -> Vec<String> {
+        std::iter::once("inno".to_string())
+            .chain(args.iter().map(|s| (*s).to_string()))
+            .collect()
+    }
+
+    fn is_internal(a: &Action) -> bool {
+        matches!(a, Action::InternalDaemon)
+    }
+
+    #[test]
+    fn test_no_args_defaults_to_internal_daemon() {
+        let args = parse_from(argv(&[]));
+        assert!(is_internal(&args.action));
+        assert!(!args.debug_mode);
+        assert!(args.enable_dbus);
+        assert!(args.log_file.is_none());
+        assert!(args.test_animation.is_none());
+        assert!(!args.test_all_animations);
+        assert!(args.test_frame_anim.is_none());
+    }
+
+    #[test]
+    fn test_help_and_version_win_regardless_of_position() {
+        for args in [vec!["--check-config", "--help"], vec!["--help", "--check-config"]] {
+            let parsed = parse_from(argv(&args));
+            assert!(matches!(parsed.action, Action::Help), "for {:?}", args);
+        }
+        for args in [vec!["-v", "--check-config"], vec!["--check-config", "-v"]] {
+            let parsed = parse_from(argv(&args));
+            assert!(matches!(parsed.action, Action::Version), "for {:?}", args);
+        }
+    }
+
+    #[test]
+    fn test_check_config_overrides_daemon_mode() {
+        let parsed = parse_from(argv(&["--daemon", "--check-config"]));
+        assert!(matches!(parsed.action, Action::CheckConfig));
+    }
+
+    #[test]
+    fn test_internal_daemon_beats_daemon_so_respawn_cannot_loop() {
+        let parsed = parse_from(argv(&["--daemon", "--internal-daemon"]));
+        assert!(is_internal(&parsed.action));
+    }
+
+    #[test]
+    fn test_value_flags_do_not_swallow_the_next_flag() {
+        // --test-frame --no-dbus used to consume "--no-dbus" as the value and
+        // silently leave the DBus control interface enabled.
+        let parsed = parse_from(argv(&["--test-frame", "--no-dbus"]));
+        assert_eq!(parsed.test_frame_anim, None);
+        assert!(!parsed.enable_dbus);
+
+        let parsed = parse_from(argv(&["-l", "--no-dbus"]));
+        assert!(parsed.log_file.is_none());
+        assert!(!parsed.enable_dbus);
+    }
+
+    #[test]
+    fn test_value_flag_does_not_hide_a_later_flag() {
+        let parsed = parse_from(argv(&["--test-frame", "ripple", "--no-dbus"]));
+        assert_eq!(parsed.test_frame_anim.as_deref(), Some("ripple"));
+        assert!(!parsed.enable_dbus);
+        assert!(parsed.debug_mode);
+    }
+
+    #[test]
+    fn test_test_frame_sets_name_and_debug_mode() {
+        let parsed = parse_from(argv(&["--test-frame", "cube_charge"]));
+        assert_eq!(parsed.test_frame_anim.as_deref(), Some("cube_charge"));
+        assert!(parsed.debug_mode);
+        assert!(!parsed.test_all_animations);
+        assert!(is_internal(&parsed.action));
+    }
+
+    #[test]
+    fn test_test_frame_without_a_value_is_ignored() {
+        let parsed = parse_from(argv(&["--test-frame"]));
+        assert_eq!(parsed.test_frame_anim, None);
+        assert!(!parsed.debug_mode);
+    }
+
+    #[test]
+    fn test_log_file_captures_its_value() {
+        let parsed = parse_from(argv(&["-l", "/tmp/inno.log"]));
+        assert_eq!(parsed.log_file, Some(PathBuf::from("/tmp/inno.log")));
+    }
+
+    #[test]
+    fn test_test_flag_accepts_1_to_6_and_maps_to_zero_based_index() {
+        for (given, expected) in [("1", 0), ("3", 2), ("6", 5)] {
+            let parsed = parse_from(argv(&["--test", given]));
+            assert_eq!(parsed.test_animation, Some(expected), "for --test {}", given);
+        }
+    }
+
+    #[test]
+    fn test_test_flag_rejects_out_of_range_and_non_numeric() {
+        for bad in ["0", "7", "abc", "-1"] {
+            let parsed = parse_from(argv(&["--test", bad]));
+            assert_eq!(parsed.test_animation, None, "for --test {}", bad);
+        }
+    }
+
+    #[test]
+    fn test_test_flag_does_not_eat_a_following_flag() {
+        let parsed = parse_from(argv(&["--test", "abc", "--no-dbus"]));
+        assert_eq!(parsed.test_animation, None);
+        assert!(!parsed.enable_dbus);
+    }
+
+    #[test]
+    fn test_specific_test_implies_test_all_animations() {
+        let parsed = parse_from(argv(&["--test", "2"]));
+        assert!(parsed.test_all_animations);
+    }
+
+    #[test]
+    fn test_frame_preview_disables_the_procedural_cycle() {
+        // Both flags standing would silently disable the cycle, since the frame
+        // branch is checked first.
+        let parsed = parse_from(argv(&["--test-animations", "--test-frame", "cube"]));
+        assert_eq!(parsed.test_frame_anim.as_deref(), Some("cube"));
+        assert!(!parsed.test_all_animations);
+    }
+
+    #[test]
+    fn test_unknown_flags_are_ignored() {
+        let parsed = parse_from(argv(&["--nonsense", "--no-dbus", "--debug"]));
+        assert!(!parsed.enable_dbus);
+        assert!(parsed.debug_mode);
+        assert!(is_internal(&parsed.action));
+    }
+
+    #[test]
+    fn test_help_text_mentions_every_flag_parse_accepts() {
+        let help = help_text();
+        for flag in [
+            "--help", "--version", "--debug", "--daemon", "--log-file", "--no-dbus",
+            "--test-animations", "--test-frame", "--check-config",
+        ] {
+            assert!(help.contains(flag), "help text is missing {}", flag);
+        }
+    }
+}

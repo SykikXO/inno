@@ -20,7 +20,10 @@ pub fn aggregate_battery_state(
     // letting it win an ordering comparison via partial_cmp returning None.
     let usable: Vec<&(f64, String)> =
         ordered.iter().copied().filter(|(pct, _)| !pct.is_nan()).collect();
-    let pick = if usable.is_empty() { &ordered } else { &usable };
+    if usable.is_empty() {
+        return (100.0, "unknown".to_string());
+    }
+    let pick = &usable;
 
     match mode {
         config::BatteryMode::First => {
@@ -57,13 +60,55 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_aggregate_first() {
+    fn test_aggregate_first_picks_lowest_device_name() {
+        let mut devices = HashMap::new();
+        devices.insert("/bat1".into(), (40.0, "discharging".into()));
+        devices.insert("/bat0".into(), (80.0, "discharging".into()));
+
+        // HashMap iteration order is arbitrary, so this used to return either
+        // battery depending on the run. Sorted by name it is always bat0.
+        for _ in 0..50 {
+            let (pct, state) = aggregate_battery_state(&devices, &config::BatteryMode::First);
+            assert!((pct - 80.0).abs() < 0.01);
+            assert_eq!(state, "discharging");
+        }
+    }
+
+    #[test]
+    fn test_aggregate_ignores_nan_percentages() {
         let mut devices = HashMap::new();
         devices.insert("/bat0".into(), (80.0, "discharging".into()));
-        devices.insert("/bat1".into(), (40.0, "discharging".into()));
+        devices.insert("/bat1".into(), (f64::NAN, "discharging".into()));
 
-        let (pct, state) = aggregate_battery_state(&devices, &config::BatteryMode::First);
-        assert!((pct == 80.0 || pct == 40.0) && (state == "discharging"));
+        // A NaN from a malformed UPower payload must not win the ordering
+        // comparison and get reported as a percentage.
+        for mode in [
+            config::BatteryMode::Highest,
+            config::BatteryMode::Lowest,
+            config::BatteryMode::First,
+        ] {
+            let (pct, _) = aggregate_battery_state(&devices, &mode);
+            assert!(
+                !pct.is_nan() && (pct - 80.0).abs() < 0.01,
+                "mode {:?} produced {}",
+                mode,
+                pct
+            );
+        }
+
+        let (avg, _) = aggregate_battery_state(&devices, &config::BatteryMode::Combined);
+        assert!((avg - 80.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_aggregate_all_nan_falls_back_to_unknown() {
+        let mut devices = HashMap::new();
+        devices.insert("/bat0".into(), (f64::NAN, "unknown".into()));
+        devices.insert("/bat1".into(), (f64::NAN, "unknown".into()));
+
+        let (pct, state) = aggregate_battery_state(&devices, &config::BatteryMode::Combined);
+        assert!((pct - 100.0).abs() < 0.01);
+        assert_eq!(state, "unknown");
     }
 
     #[test]

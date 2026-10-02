@@ -503,4 +503,205 @@ mod tests {
         assert!((state.offset_x).abs() < f64::EPSILON);
         assert!((state.offset_y).abs() < f64::EPSILON);
     }
+
+    // --- measurement and rendering --------------------------------------
+    //
+    // Absolute pixel sizes depend on the host fontconfig, so these assert
+    // relational invariants rather than exact numbers.
+
+    fn test_config() -> config::AppConfig {
+        config::AppConfig {
+            font: "monospace".to_string(),
+            font_size: 18.0,
+            font_slant: cairo::FontSlant::Normal,
+            font_weight: cairo::FontWeight::Normal,
+            border_radius: 8.0,
+            gradient: false,
+            bg_color: (0.0, 0.0, 0.0, 0.6),
+            text_color: (1.0, 1.0, 1.0, 1.0),
+            ..Default::default()
+        }
+    }
+
+    fn test_signal() -> config::Signal {
+        config::Signal {
+            message: "test".into(),
+            icon: String::new(),
+            icon_size: 24.0,
+            color: (1.0, 1.0, 1.0, 1.0),
+            color_name: "white".into(),
+            threshold: 0.0,
+            state_filter: "any".into(),
+            animation: config::Animation::None,
+            animation_ref: None,
+            duration: 5,
+            sound: None,
+        }
+    }
+
+    #[test]
+    fn test_measure_text_wider_text_is_wider() {
+        let cfg = test_config();
+        let short = measure_text("hi", &cfg, None, 1.0);
+        let long = measure_text("a considerably longer message", &cfg, None, 1.0);
+        assert!(long.0 > short.0, "{:?} should exceed {:?}", long, short);
+    }
+
+    #[test]
+    fn test_measure_text_height_is_independent_of_width() {
+        // Only for the same glyph class: text_extents height is the inked height,
+        // so descenders do change it.
+        let cfg = test_config();
+        let short = measure_text("hhhhh", &cfg, None, 1.0);
+        let long = measure_text("hhhhhhhhhhhhhhhhhhhh", &cfg, None, 1.0);
+        assert!(long.0 > short.0, "width should grow with text");
+        assert_eq!(long.1, short.1, "height should not grow with width");
+    }
+
+    #[test]
+    fn test_measure_text_grows_with_scale() {
+        let cfg = test_config();
+        let small = measure_text("hello", &cfg, None, 1.0);
+        let large = measure_text("hello", &cfg, None, 2.0);
+        assert!(large.0 > small.0 && large.1 > small.1);
+        // Doubling the scale should roughly double each dimension.
+        let ratio_w = large.0 as f64 / small.0 as f64;
+        assert!((1.9..2.1).contains(&ratio_w), "width ratio was {}", ratio_w);
+    }
+
+    #[test]
+    fn test_measure_text_icon_adds_width() {
+        let cfg = test_config();
+        let without = measure_text("hi", &cfg, None, 1.0);
+        let mut signal = test_signal();
+        signal.icon = "\u{f000}".to_string();
+        let with = measure_text("hi", &cfg, Some(&signal), 1.0);
+        assert!(with.0 > without.0, "icon should widen the surface");
+        assert_eq!(with.1, without.1, "icon should not change height");
+    }
+
+    #[test]
+    fn test_measure_text_never_returns_degenerate_size() {
+        // layer.rs treats w <= 1 or h <= 1 as "nothing to render" and hides the
+        // surface, so this must never happen for real text.
+        let cfg = test_config();
+        let (w, h) = measure_text("", &cfg, None, 1.0);
+        assert!(w > 1 && h > 1, "empty text gave {}x{}", w, h);
+    }
+
+    #[test]
+    fn test_draw_with_signal_reports_its_dimensions() {
+        let cfg = test_config();
+        let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 800, 300).unwrap();
+        let (w, h) = {
+            let cr = cairo::Context::new(&surface).unwrap();
+            draw_with_signal(&cr, "hello", &cfg, Some(&test_signal()), &DrawState::default(), 1.0)
+        };
+        assert_eq!((w, h), measure_text("hello", &cfg, Some(&test_signal()), 1.0));
+    }
+
+    #[test]
+    fn test_blink_while_invisible_reports_a_one_pixel_surface() {
+        // layer.rs keys off this to commit a transparent buffer rather than
+        // redrawing the card.
+        let cfg = test_config();
+        let mut signal = test_signal();
+        signal.animation = config::Animation::Blink;
+        let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 800, 300).unwrap();
+        let cr = cairo::Context::new(&surface).unwrap();
+        let state = DrawState { visible: false, ..Default::default() };
+
+        let (w, h) = draw_with_signal(&cr, "hello", &cfg, Some(&signal), &state, 1.0);
+        assert_eq!((w, h), (1, 1));
+    }
+
+    #[test]
+    fn test_draw_with_signal_paints_the_card() {
+        let mut cfg = test_config();
+        cfg.border_radius = 0.0;
+        let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 600, 300).unwrap();
+
+        // Empty text so the sample lands on background rather than a glyph.
+        let (w, h) = {
+            let cr = cairo::Context::new(&surface).unwrap();
+            draw_with_signal(&cr, "", &cfg, Some(&test_signal()), &DrawState::default(), 1.0)
+        };
+        surface.flush();
+
+        // The card is only as large as the text, so sample using the returned
+        // dimensions rather than a fixed point.
+        let stride = surface.stride() as usize;
+        let alpha = {
+            let data = surface.data().unwrap();
+            let y = (h / 2) as usize;
+            let x = (w / 2) as usize;
+            data[y * stride + x * 4 + 3]
+        };
+        assert!(alpha > 0, "card interior was not painted, alpha={}", alpha);
+        assert!(
+            (alpha as f64 - cfg.bg_color.3 * 255.0).abs() < 2.0,
+            "expected the bg alpha {}, got {}",
+            cfg.bg_color.3 * 255.0,
+            alpha
+        );
+    }
+
+    #[test]
+    fn test_draw_with_signal_leaves_outside_the_card_clear() {
+        let cfg = test_config();
+        let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 600, 300).unwrap();
+        let (w, _) = {
+            let cr = cairo::Context::new(&surface).unwrap();
+            draw_with_signal(&cr, "hello", &cfg, Some(&test_signal()), &DrawState::default(), 1.0)
+        };
+        surface.flush();
+
+        let stride = surface.stride() as usize;
+        let alpha = {
+            let data = surface.data().unwrap();
+            data[290 * stride + 590 * 4 + 3]
+        };
+        assert_eq!(alpha, 0, "pixels beyond the card should stay clear");
+        assert!(w < 600, "the card should not span the whole surface");
+    }
+
+    #[test]
+    fn test_rounded_rect_leaves_corners_transparent() {
+        let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 100, 100).unwrap();
+        {
+            let cr = cairo::Context::new(&surface).unwrap();
+            cr.set_operator(cairo::Operator::Source);
+            cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
+            cr.paint().unwrap();
+            cr.set_source_rgba(1.0, 0.0, 0.0, 1.0);
+            rounded_rect(&cr, 0.0, 0.0, 100.0, 100.0, 20.0);
+            cr.fill().unwrap();
+        }
+        surface.flush();
+
+        let stride = surface.stride() as usize;
+        let data = surface.data().unwrap();
+        let alpha_at = |x: usize, y: usize| data[y * stride + x * 4 + 3];
+        // A 20px radius means the very corner stays clear and the centre is filled.
+        assert_eq!(alpha_at(1, 1), 0, "corner should be transparent");
+        assert_eq!(alpha_at(50, 50), 255, "centre should be filled");
+    }
+
+    #[test]
+    fn test_rounded_rect_without_radius_fills_the_whole_area() {
+        let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 100, 100).unwrap();
+        {
+            let cr = cairo::Context::new(&surface).unwrap();
+            cr.set_operator(cairo::Operator::Source);
+            cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
+            cr.paint().unwrap();
+            cr.set_source_rgba(1.0, 0.0, 0.0, 1.0);
+            rounded_rect(&cr, 0.0, 0.0, 100.0, 100.0, 0.0);
+            cr.fill().unwrap();
+        }
+        surface.flush();
+
+        let data = surface.data().unwrap();
+        assert_eq!(data[3], 255, "radius 0 should fill the top-left pixel");
+    }
 }

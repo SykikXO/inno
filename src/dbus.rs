@@ -371,3 +371,93 @@ async fn run_bus_listener(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use zbus::zvariant::Value;
+
+    fn state_map() -> HashMap<String, String> {
+        let mut map = HashMap::new();
+        map.insert("1".to_string(), "charging".to_string());
+        map.insert("2".to_string(), "discharging".to_string());
+        map.insert("full".to_string(), "charged".to_string());
+        map
+    }
+
+    #[test]
+    fn test_upower_state_to_string_covers_known_states() {
+        assert_eq!(upower_state_to_string(1), "charging");
+        assert_eq!(upower_state_to_string(2), "discharging");
+        assert_eq!(upower_state_to_string(4), "full");
+        // 0 is unknown, 3 is the "full but not charging" sentinel, and anything
+        // out of range must not be guessed at.
+        assert_eq!(upower_state_to_string(0), "unknown");
+        assert_eq!(upower_state_to_string(3), "unknown");
+        assert_eq!(upower_state_to_string(99), "unknown");
+    }
+
+    #[test]
+    fn test_value_to_string_applies_the_state_map() {
+        let map = state_map();
+        assert_eq!(value_to_string(&Value::from(1u32), &map), "charging");
+        assert_eq!(value_to_string(&Value::from(2u32), &map), "discharging");
+        assert_eq!(value_to_string(&Value::from("full"), &map), "charged");
+    }
+
+    #[test]
+    fn test_value_to_string_falls_back_to_the_raw_value() {
+        let map = state_map();
+        assert_eq!(value_to_string(&Value::from(7u32), &map), "7");
+        assert_eq!(value_to_string(&Value::from("unknown-key"), &map), "unknown-key");
+    }
+
+    #[test]
+    fn test_value_to_string_renders_unmapped_types() {
+        let map = state_map();
+        assert_eq!(value_to_string(&Value::from(42.7f64), &map), "43");
+        assert_eq!(value_to_string(&Value::from(5i64), &map), "5");
+        assert_eq!(value_to_string(&Value::from(true), &map), "true");
+    }
+
+    #[test]
+    fn test_value_to_string_unwraps_nested_variants() {
+        let map = state_map();
+        let nested = Value::Value(Box::new(Value::from(1u32)));
+        assert_eq!(value_to_string(&nested, &map), "charging");
+    }
+
+    #[test]
+    fn test_extract_f64_widens_integer_types() {
+        assert_eq!(extract_f64(&Value::from(1.5f64)), Some(1.5));
+        assert_eq!(extract_f64(&Value::from(80u32)), Some(80.0));
+        assert_eq!(extract_f64(&Value::from(-3i32)), Some(-3.0));
+        assert_eq!(extract_f64(&Value::from(7i64)), Some(7.0));
+    }
+
+    #[test]
+    fn test_extract_f64_rejects_non_numeric_values() {
+        assert_eq!(extract_f64(&Value::from("nope")), None);
+        assert_eq!(extract_f64(&Value::from(true)), None);
+    }
+
+    #[test]
+    fn test_extract_f64_unwraps_nested_variants() {
+        let nested = Value::Value(Box::new(Value::from(80u32)));
+        assert_eq!(extract_f64(&nested), Some(80.0));
+    }
+
+    #[test]
+    fn test_extract_u32_accepts_signed_and_unsigned() {
+        assert_eq!(extract_u32(&Value::from(42u32)), Some(42));
+        assert_eq!(extract_u32(&Value::from(42i32)), Some(42));
+        assert_eq!(extract_u32(&Value::from(true)), None);
+    }
+
+    #[test]
+    fn test_extract_u32_unwraps_nested_variants() {
+        let nested = Value::Value(Box::new(Value::from(42u32)));
+        assert_eq!(extract_u32(&nested), Some(42));
+    }
+}

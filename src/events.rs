@@ -311,6 +311,7 @@ fn builtin_battery_event() -> EventConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::TempDir;
 
     #[test]
     fn test_match_rule_exact() {
@@ -520,5 +521,178 @@ mod tests {
         assert_eq!(event.state_map.get("2"), Some(&"discharging".to_string()));
         assert_eq!(event.state_map.get("4"), Some(&"full".to_string()));
         assert_eq!(event.state_map.get("3"), None); // Not mapped
+    }
+
+    // --- event file loading ---------------------------------------------
+    //
+    // A malformed event file is logged and skipped at load time, so a typo in
+    // the battery event silently stops every battery notification.
+
+    fn write(body: &str) -> (TempDir, PathBuf) {
+        let dir = TempDir::new("event");
+        let path = dir.join("event.toml");
+        std::fs::write(&path, body).unwrap();
+        (dir, path)
+    }
+
+    const VALID_EVENT: &str = r#"
+name = "Laptop Battery"
+enabled = true
+bus = "system"
+
+[match]
+interface = "org.freedesktop.DBus.Properties"
+member = "PropertiesChanged"
+arg0 = "org.freedesktop.UPower.Device"
+path_prefix = "/org/freedesktop/UPower/devices/battery_BAT"
+
+[extract]
+percentage = "Percentage"
+state = "State"
+
+[state_map]
+"1" = "charging"
+"2" = "discharging"
+"4" = "full"
+
+[format]
+message = "{percentage}%"
+
+[conditions]
+debounce_ms = 1000
+"#;
+
+    #[test]
+    fn test_load_event_file_parses_every_section() {
+        let (_dir, path) = write(VALID_EVENT);
+        let event = load_event_file(&path).expect("valid event should load");
+
+        assert_eq!(event.name, "Laptop Battery");
+        assert!(event.enabled);
+        assert_eq!(event.bus, "system");
+        assert_eq!(
+            event.match_rule.interface.as_deref(),
+            Some("org.freedesktop.DBus.Properties")
+        );
+        assert_eq!(
+            event.match_rule.arg0.as_deref(),
+            Some("org.freedesktop.UPower.Device")
+        );
+        assert_eq!(event.extract.get("percentage").map(String::as_str), Some("Percentage"));
+        assert_eq!(event.state_map.get("1").map(String::as_str), Some("charging"));
+        assert_eq!(event.conditions.debounce_ms, 1000);
+    }
+
+    #[test]
+    fn test_load_event_file_compiles_the_message_template() {
+        // format.template is skipped during deserialization and compiled from
+        // format.message afterwards; if that step is lost the notification text
+        // renders as the raw placeholder.
+        let (_dir, path) = write(VALID_EVENT);
+        let event = load_event_file(&path).unwrap();
+
+        let mut values = HashMap::new();
+        values.insert("percentage".to_string(), "80".to_string());
+        assert_eq!(event.format.template.render(&values), "80%");
+    }
+
+    #[test]
+    fn test_load_event_file_rejects_malformed_toml() {
+        let (_dir, path) = write("name = = broken [[[");
+        let err = load_event_file(&path).unwrap_err();
+        assert!(err.contains("Parse error"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_load_event_file_reports_unreadable_paths() {
+        let dir = TempDir::new("event-missing");
+        let err = load_event_file(&dir.join("absent.toml")).unwrap_err();
+        assert!(err.contains("Read error"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_load_event_file_defaults_enabled_and_bus() {
+        let (_dir, path) = write(
+            r#"
+name = "Minimal"
+
+[match]
+interface = "org.example.Thing"
+
+[format]
+message = "hi"
+"#,
+        );
+        let event = load_event_file(&path).expect("should still load");
+        assert!(event.enabled, "enabled should default to true");
+        assert_eq!(event.bus, "system", "bus should default to system");
+    }
+
+    #[test]
+    fn test_load_event_file_requires_a_match_table() {
+        // The match table is not #[serde(default)], so omitting it is a parse
+        // error rather than a rule that silently matches nothing.
+        let (_dir, path) = write("name = \"No Match\"\n");
+        let err = load_event_file(&path).unwrap_err();
+        assert!(err.contains("Parse error"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_builtin_battery_event_maps_upower_states() {
+        let event = builtin_battery_event();
+        assert!(event.enabled);
+        assert_eq!(event.state_map.get("1").map(String::as_str), Some("charging"));
+        assert_eq!(event.state_map.get("2").map(String::as_str), Some("discharging"));
+        assert_eq!(event.state_map.get("4").map(String::as_str), Some("full"));
+        assert_eq!(event.extract.get("percentage").map(String::as_str), Some("Percentage"));
+    }
+
+    #[test]
+    fn test_match_rule_requires_the_configured_fields() {
+        let rule = MatchRule {
+            interface: Some("org.freedesktop.DBus.Properties".to_string()),
+            member: Some("PropertiesChanged".to_string()),
+            path: None,
+            path_prefix: Some("/org/freedesktop/UPower/devices".to_string()),
+            arg0: Some("org.freedesktop.UPower.Device".to_string()),
+            sender: None,
+        };
+
+        assert!(rule.matches(
+            "org.freedesktop.DBus.Properties",
+            "PropertiesChanged",
+            "/org/freedesktop/UPower/devices/battery_BAT0"
+        ));
+        // Wrong member, wrong prefix, and a different interface must all fail.
+        assert!(!rule.matches(
+            "org.freedesktop.DBus.Properties",
+            "InterfacesAdded",
+            "/org/freedesktop/UPower/devices/battery_BAT0"
+        ));
+        assert!(!rule.matches(
+            "org.freedesktop.DBus.Properties",
+            "PropertiesChanged",
+            "/org/freedesktop/UPower"
+        ));
+        assert!(!rule.matches("org.example.Other", "PropertiesChanged", "/org/freedesktop/UPower/devices/battery_BAT0"));
+    }
+
+    #[test]
+    fn test_match_rule_to_match_string_includes_every_set_field() {
+        let rule = MatchRule {
+            interface: Some("org.freedesktop.DBus.Properties".to_string()),
+            member: Some("PropertiesChanged".to_string()),
+            path: None,
+            path_prefix: Some("/org/freedesktop/UPower/devices".to_string()),
+            arg0: Some("Percentage".to_string()),
+            sender: None,
+        };
+        let s = rule.to_match_string();
+        assert!(s.contains("type='signal'"), "got: {}", s);
+        assert!(s.contains("interface='org.freedesktop.DBus.Properties'"), "got: {}", s);
+        assert!(s.contains("member='PropertiesChanged'"), "got: {}", s);
+        assert!(s.contains("arg0='Percentage'"), "got: {}", s);
+        // path was not set, so no path constraint should appear.
+        assert!(!s.contains("path="), "got: {}", s);
     }
 }

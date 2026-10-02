@@ -18,6 +18,8 @@ mod events;
 mod layer;
 mod sound;
 mod state;
+#[cfg(test)]
+mod testutil;
 
 use args::{Action, Args};
 use config::{AppConfig, HIDE_TIMEOUT_SECS};
