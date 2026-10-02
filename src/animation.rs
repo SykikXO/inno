@@ -30,8 +30,6 @@ impl std::fmt::Debug for AnimPlayer {
 }
 
 impl AnimPlayer {
-    /// Load frames from a directory of PNG files.
-    /// Files are sorted by filename (natural sort via `sort_by`).
     pub fn load<P: AsRef<Path>>(
         source: P,
         fps: u64,
@@ -88,6 +86,7 @@ impl AnimPlayer {
         }
 
         let (frame_w, frame_h) = dims.unwrap_or((1, 1));
+        // A zero fps would make the frame period divide to zero downstream.
         let fps = fps.max(1);
 
         Ok(Self {
@@ -102,7 +101,6 @@ impl AnimPlayer {
         })
     }
 
-    /// Advance to the next frame
     pub fn tick(&mut self) {
         if self.done {
             return;
@@ -121,47 +119,59 @@ impl AnimPlayer {
         }
     }
 
-    /// Get the current frame surface
     pub fn current_frame(&self) -> &ImageSurface {
         &self.frames[self.frame_idx]
     }
 
-    /// Reset animation to first frame
     pub fn reset(&mut self) {
         self.frame_idx = 0;
         self.done = false;
     }
 
     /// Whether a non-looping animation has completed
-    #[allow(dead_code)]
     pub fn is_done(&self) -> bool {
         self.done
     }
 }
 
-/// Natural sort comparison for filenames
+/// Orders filenames naturally: digit runs compare as numbers so `frame_9`
+/// precedes `frame_10`. Splits each stem into digit and non-digit runs and
+/// compares run by run, which yields a total order. Comparing only a trailing
+/// number does not: `b1 < a9 < aa < b1` is a cycle.
 fn nat_compare(a: &Path, b: &Path) -> std::cmp::Ordering {
     let a_name = a.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     let b_name = b.file_stem().and_then(|s| s.to_str()).unwrap_or("");
 
-    // Try to compare trailing numbers first
-    let a_num = extract_trailing_number(a_name);
-    let b_num = extract_trailing_number(b_name);
+    let (mut a_chars, mut b_chars) = (a_name.chars().peekable(), b_name.chars().peekable());
 
-    match (a_num, b_num) {
-        (Some(an), Some(bn)) if an != bn => an.cmp(&bn),
-        _ => a_name.cmp(b_name),
+    loop {
+        match (a_chars.peek().copied(), b_chars.peek().copied()) {
+            (None, None) => return std::cmp::Ordering::Equal,
+            (None, Some(_)) => return std::cmp::Ordering::Less,
+            (Some(_), None) => return std::cmp::Ordering::Greater,
+            (Some(ac), Some(bc)) => {
+                let ordering = if ac.is_ascii_digit() && bc.is_ascii_digit() {
+                    let an: String = a_chars.by_ref().take_while(char::is_ascii_digit).collect();
+                    let bn: String = b_chars.by_ref().take_while(char::is_ascii_digit).collect();
+                    // Compare by length first so arbitrarily long digit runs
+                    // never overflow u64.
+                    an.len().cmp(&bn.len()).then_with(|| an.cmp(&bn))
+                } else {
+                    match ac.cmp(&bc) {
+                        std::cmp::Ordering::Equal => {
+                            a_chars.next();
+                            b_chars.next();
+                            continue;
+                        }
+                        other => other,
+                    }
+                };
+                if ordering != std::cmp::Ordering::Equal {
+                    return ordering;
+                }
+            }
+        }
     }
-}
-
-/// Extract trailing number from a filename stem like "frame_0042" -> Some(42)
-fn extract_trailing_number(s: &str) -> Option<u64> {
-    let digits: String = s.chars().rev().take_while(|c| c.is_ascii_digit()).collect();
-    if digits.is_empty() {
-        return None;
-    }
-    let reversed: String = digits.chars().rev().collect();
-    reversed.parse::<u64>().ok()
 }
 
 #[cfg(test)]
@@ -262,15 +272,6 @@ mod tests {
         assert!(!player.is_done());
 
         let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_extract_trailing_number() {
-        assert_eq!(extract_trailing_number("frame_0000"), Some(0));
-        assert_eq!(extract_trailing_number("frame_0042"), Some(42));
-        assert_eq!(extract_trailing_number("hello123"), Some(123));
-        assert_eq!(extract_trailing_number("no_numbers"), None);
-        assert_eq!(extract_trailing_number(""), None);
     }
 
     #[test]

@@ -98,10 +98,14 @@ pub enum DisplayMode {
 }
 
 impl DisplayMode {
-    pub fn parse(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
-            "text" => DisplayMode::Text,
-            _ => DisplayMode::Anim,
+    /// `None` for an unrecognised value, so the caller can warn rather than
+    /// silently rendering an animation-only notification where the user
+    /// expected text.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_lowercase().as_str() {
+            "text" => Some(DisplayMode::Text),
+            "anim" | "animation" => Some(DisplayMode::Anim),
+            _ => None,
         }
     }
 }
@@ -513,6 +517,20 @@ impl AppConfig {
 
         // Parse animations
         for (name, anim_cfg) in file.animations {
+            let display = match anim_cfg.display.as_deref() {
+                Some(raw) => match DisplayMode::parse(raw) {
+                    Some(mode) => mode,
+                    None => {
+                        eprintln!(
+                            "animations.{}: unknown display '{}', defaulting to 'anim'",
+                            name, raw
+                        );
+                        DisplayMode::Anim
+                    }
+                },
+                None => DisplayMode::Anim,
+            };
+
             self.animations.insert(
                 name,
                 AnimAsset {
@@ -523,9 +541,11 @@ impl AppConfig {
                     } else {
                         anim_cfg.source
                     },
+                    // Not clamped here: a zero fps is reported by validate()
+                    // rather than silently becoming a 1 fps animation.
                     fps: anim_cfg.fps.unwrap_or(self.fps),
                     loop_: anim_cfg.loop_.unwrap_or(true),
-                    display: DisplayMode::parse(anim_cfg.display.as_deref().unwrap_or("anim")),
+                    display,
                 },
             );
         }
@@ -552,19 +572,8 @@ impl AppConfig {
                 }
             });
 
-            let anim_str = sig_cfg.animation.trim();
-            let (animation, animation_ref) = if self.animations.contains_key(anim_str) {
-                (Animation::None, Some(anim_str.to_string()))
-            } else {
-                let explicit_ref = sig_cfg.animation_ref.as_deref();
-                if let Some(ref_name) = explicit_ref
-                    && self.animations.contains_key(ref_name)
-                {
-                    (Animation::None, Some(ref_name.to_string()))
-                } else {
-                    (parse_animation(anim_str), None)
-                }
-            };
+            let (animation, animation_ref) =
+                self.resolve_animation(sig_cfg.animation.trim(), sig_cfg.animation_ref.as_deref());
 
             let signal = Signal {
                 message: sig_cfg.message,
@@ -616,6 +625,28 @@ impl AppConfig {
         best_idx
     }
 
+    /// Splits a signal's `animation` and `animation_ref` into the procedural
+    /// transition and the frame-animation content.
+    ///
+    /// They are independent and compose: `animation = "fade"` with
+    /// `animation_ref = "cube"` fades a cube in. Naming an `[animations]` key
+    /// in `animation` is shorthand for "the content is that asset, and there
+    /// is no separate transition".
+    ///
+    /// An `animation_ref` is kept even when it does not resolve, so validate()
+    /// can report the typo instead of the config quietly rendering a plain text
+    /// card.
+    fn resolve_animation(
+        &self,
+        anim: &str,
+        explicit_ref: Option<&str>,
+    ) -> (Animation, Option<String>) {
+        if self.animations.contains_key(anim) {
+            return (Animation::None, Some(anim.to_string()));
+        }
+        (parse_animation(anim), explicit_ref.map(str::to_string))
+    }
+
     /// Validate config and return list of warnings/errors
     pub fn validate(&self) -> (Vec<String>, Vec<String>) {
         let mut errors = Vec::new();
@@ -652,6 +683,61 @@ impl AppConfig {
                 && !sound_path.exists() {
                     warnings.push(format!("signal[{}]: sound file not found: {:?}", i, sound_path));
                 }
+            // An unresolvable animation_ref silently degrades to a plain text
+            // card, so the config would report valid while rendering nothing
+            // the user asked for.
+            if let Some(ref anim) = sig.animation_ref
+                && !self.animations.contains_key(anim)
+            {
+                errors.push(format!(
+                    "signal[{}]: animation_ref '{}' is not defined in [animations]",
+                    i, anim
+                ));
+            }
+        }
+
+        for (name, anim) in &self.animations {
+            if !anim.source.is_dir() {
+                errors.push(format!(
+                    "animations.{}: source is not a directory: {}",
+                    name,
+                    anim.source.display()
+                ));
+                continue;
+            }
+
+            match std::fs::read_dir(&anim.source) {
+                Ok(entries) => {
+                    let pngs = entries
+                        .filter_map(|e| e.ok())
+                        .filter(|e| {
+                            e.path()
+                                .extension()
+                                .and_then(|x| x.to_str())
+                                .is_some_and(|x| x.eq_ignore_ascii_case("png"))
+                        })
+                        .count();
+                    if pngs == 0 {
+                        errors.push(format!(
+                            "animations.{}: no PNG frames in {}",
+                            name,
+                            anim.source.display()
+                        ));
+                    }
+                }
+                Err(e) => errors.push(format!(
+                    "animations.{}: cannot read {}: {}",
+                    name,
+                    anim.source.display(),
+                    e
+                )),
+            }
+
+            if anim.fps == 0 {
+                errors.push(format!("animations.{}: fps must be > 0", name));
+            } else if anim.fps > 120 {
+                warnings.push(format!("animations.{}: fps={} is unusually high", name, anim.fps));
+            }
         }
 
         if self.fps == 0 {
@@ -1295,40 +1381,78 @@ mod tests {
 
     #[test]
     fn test_display_mode_parse() {
-        assert_eq!(DisplayMode::parse("anim"), DisplayMode::Anim);
-        assert_eq!(DisplayMode::parse("Anim"), DisplayMode::Anim);
-        assert_eq!(DisplayMode::parse("text"), DisplayMode::Text);
-        assert_eq!(DisplayMode::parse("Text"), DisplayMode::Text);
-        assert_eq!(DisplayMode::parse("unknown"), DisplayMode::Anim); // default
-        assert_eq!(DisplayMode::parse(""), DisplayMode::Anim); // default
+        assert_eq!(DisplayMode::parse("anim"), Some(DisplayMode::Anim));
+        assert_eq!(DisplayMode::parse("Anim"), Some(DisplayMode::Anim));
+        assert_eq!(DisplayMode::parse(" text "), Some(DisplayMode::Text));
+        assert_eq!(DisplayMode::parse("animation"), Some(DisplayMode::Anim));
+        // Unknown values return None so the caller can warn; they must not
+        // silently become Anim, which would drop the notification text.
+        assert_eq!(DisplayMode::parse("txet"), None);
+        assert_eq!(DisplayMode::parse(""), None);
     }
 
-    #[test]
-    fn test_anim_asset_defaults() {
-        // Simulate what load_toml does with default values
-        let anim = AnimAsset {
-            source: PathBuf::from("/test/frames"),
-            fps: 30,
-            loop_: true,
-            display: DisplayMode::Anim,
-        };
-        assert_eq!(anim.fps, 30);
-        assert!(anim.loop_);
-        assert_eq!(anim.display, DisplayMode::Anim);
-    }
-
-    #[test]
-    fn test_animation_ref_resolution_explicit_ref() {
-        // When animation_ref explicitly names an animation key, it should be used
+    fn config_with_animations(names: &[&str]) -> AppConfig {
         let mut config = AppConfig::default();
-        config.animations.insert("my_anim".to_string(), AnimAsset {
-            source: PathBuf::from("/test"),
-            fps: 30,
-            loop_: true,
-            display: DisplayMode::Text,
-        });
+        for name in names {
+            config.animations.insert(
+                (*name).to_string(),
+                AnimAsset {
+                    source: PathBuf::from("/test"),
+                    fps: 30,
+                    loop_: true,
+                    display: DisplayMode::Text,
+                },
+            );
+        }
+        config
+    }
 
-        let signal = Signal {
+    #[test]
+    fn test_resolve_animation_asset_name_shorthand() {
+        let config = config_with_animations(&["cube"]);
+        let (anim, reference) = config.resolve_animation("cube", None);
+        assert_eq!(anim, Animation::None);
+        assert_eq!(reference.as_deref(), Some("cube"));
+    }
+
+    #[test]
+    fn test_resolve_animation_shorthand_wins_over_explicit_ref() {
+        let config = config_with_animations(&["cube", "ripple"]);
+        let (anim, reference) = config.resolve_animation("cube", Some("ripple"));
+        assert_eq!(anim, Animation::None);
+        assert_eq!(reference.as_deref(), Some("cube"));
+    }
+
+    #[test]
+    fn test_resolve_animation_composes_transition_with_content() {
+        let config = config_with_animations(&["cube"]);
+        let (anim, reference) = config.resolve_animation("fade", Some("cube"));
+        assert_eq!(anim, Animation::Fade);
+        assert_eq!(reference.as_deref(), Some("cube"));
+    }
+
+    #[test]
+    fn test_resolve_animation_procedural_only() {
+        let config = config_with_animations(&["cube"]);
+        let (anim, reference) = config.resolve_animation("bounce", None);
+        assert_eq!(anim, Animation::Bounce);
+        assert_eq!(reference, None);
+    }
+
+    #[test]
+    fn test_resolve_animation_keeps_unresolvable_ref_for_validation() {
+        // The name is preserved rather than dropped so validate() can report
+        // the typo instead of the config rendering a plain text card.
+        let config = config_with_animations(&["cube"]);
+        let (anim, reference) = config.resolve_animation("pulse", Some("cube_chargee"));
+        assert_eq!(anim, Animation::Pulse);
+        assert_eq!(reference.as_deref(), Some("cube_chargee"));
+    }
+
+    #[test]
+    fn test_validate_reports_unresolvable_animation_ref() {
+        let mut config = config_with_animations(&["cube"]);
+        config.signals = vec![Signal {
             message: "test".into(),
             icon: "".into(),
             icon_size: 24.0,
@@ -1337,35 +1461,16 @@ mod tests {
             threshold: 0.0,
             state_filter: "any".into(),
             animation: Animation::None,
-            animation_ref: Some("my_anim".into()),
+            animation_ref: Some("typo".into()),
             duration: 5,
             sound: None,
-        };
-
-        // animation_ref should point to the animations entry
-        assert!(signal.animation_ref.is_some());
-        assert!(config.animations.contains_key(signal.animation_ref.as_ref().unwrap()));
-    }
-
-    #[test]
-    fn test_animation_ref_none_falls_through_to_procedural() {
-        // When no animation_ref, procedural animation should be used
-        let signal = Signal {
-            message: "test".into(),
-            icon: "".into(),
-            icon_size: 24.0,
-            color: (1.0, 1.0, 1.0, 1.0),
-            color_name: "white".into(),
-            threshold: 0.0,
-            state_filter: "any".into(),
-            animation: Animation::Fade,
-            animation_ref: None,
-            duration: 5,
-            sound: None,
-        };
-
-        assert!(signal.animation_ref.is_none());
-        assert_eq!(signal.animation, Animation::Fade);
+        }];
+        let (errors, _) = config.validate();
+        assert!(
+            errors.iter().any(|e| e.contains("animation_ref") && e.contains("typo")),
+            "expected an error naming the bad ref, got: {:?}",
+            errors
+        );
     }
 
     #[test]

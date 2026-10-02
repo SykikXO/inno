@@ -23,11 +23,18 @@ use args::{Action, Args};
 use config::{AppConfig, HIDE_TIMEOUT_SECS};
 use control::ControlEvent;
 use dbus::Event;
-use layer::LayerApp;
+use layer::{FrameTick, LayerApp};
 use sound::SoundWorker;
 use state::NotificationState;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Sleep between procedural animation frames. `fps` is validated at config
+/// load, but clamp anyway so a bad value cannot produce a zero-duration
+/// timer and spin the loop.
+fn frame_delay(config: &AppConfig) -> Duration {
+    Duration::from_micros(1_000_000 / config.fps.clamp(1, 1_000_000))
+}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
@@ -210,8 +217,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut state = NotificationState::new();
     let mut hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
-    let mut animation_timer =
-        Box::pin(tokio::time::sleep(Duration::from_micros(1_000_000 / config.fps.max(1))));
+    let mut animation_timer = Box::pin(tokio::time::sleep(frame_delay(&config)));
 
     let test_animations_list = config::Animation::TEST_VARIANTS;
     let mut current_test_signal: Option<config::Signal> = None;
@@ -234,6 +240,11 @@ async fn main() -> anyhow::Result<()> {
         if app.scale_changed {
             app.scale_changed = false;
             app.update_scale_margins(&config);
+            // Frames are decoded for a specific display size, so a scale change
+            // invalidates them along with the text cache.
+            app.frame_cache.clear();
+            app.clear_animations();
+
             if let Some(ref text) = state.current_text {
                 state.draw_state.reset();
                 if let Some(idx) = state.current_signal_idx {
@@ -244,8 +255,16 @@ async fn main() -> anyhow::Result<()> {
                         app.hide();
                     } else {
                         let signal = &config.signals[idx];
-                        app.draw_text_with_signal(text, &config, Some(signal), &state.draw_state);
-                        state.animating = signal.animation != config::Animation::None;
+                        // A frame animation and the procedural transition are
+                        // independent, so either one keeps the timer running.
+                        state.animating = signal.animation_ref.is_some()
+                            || signal.animation != config::Animation::None;
+                        // Drawing here would flash a text card over an
+                        // animation-only notification; the timer redraws in
+                        // about a frame instead.
+                        if !state.animating {
+                            app.draw_text_with_signal(text, &config, Some(signal), &state.draw_state);
+                        }
                     }
                 } else {
                     app.draw_text(text, &config);
@@ -276,8 +295,8 @@ async fn main() -> anyhow::Result<()> {
                 eprintln!("inno: reloaded {} signals", config.signals.len());
                 app.frame_cache.clear();
                 app.clear_animations();
-                animation_timer = Box::pin(tokio::time::sleep(Duration::from_micros(1_000_000 / config.fps.max(1))));
-                state.on_config_reload();
+                animation_timer = Box::pin(tokio::time::sleep(frame_delay(&config)));
+                state.on_config_reload(&mut app);
                 if (config.scale - old_scale).abs() > 0.01 {
                     eprintln!("Scale changed, redrawing...");
                     app.scale_changed = true;
@@ -306,7 +325,7 @@ async fn main() -> anyhow::Result<()> {
                         eprintln!("inno: reloaded {} signals", config.signals.len());
                         app.frame_cache.clear();
                         app.clear_animations();
-                        state.on_config_reload();
+                        state.on_config_reload(&mut app);
                     }
                 }
             }
@@ -354,8 +373,28 @@ async fn main() -> anyhow::Result<()> {
                     state.current_text = Some(text.clone());
                     state.draw_state.reset();
                     current_test_signal = Some(test_signal);
-                    // Initial draw done via the animation_timer path below
-                    // Reset test timer to fire after a long delay to keep animating
+
+                    if !config.animations.contains_key(frame_name) {
+                        eprintln!(
+                            "No animation named '{}' in config. Known: {:?}",
+                            frame_name,
+                            config.animations.keys().collect::<Vec<_>>()
+                        );
+                    } else {
+                        // Draw frame 0 here. The timer path ticks before it
+                        // draws, so leaving the first frame to it skipped it.
+                        app.draw_frame_anim(
+                            frame_name,
+                            &config,
+                            current_test_signal.as_ref(),
+                            &text,
+                            &state.draw_state,
+                            false,
+                        );
+                        hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(30)));
+                    }
+
+                    // Park the cycle; the animation_timer drives playback.
                     test_timer = Box::pin(tokio::time::sleep(Duration::from_secs(9999)));
                 } else if test_all_animations {
                     // Existing procedural animation test mode
@@ -404,53 +443,77 @@ async fn main() -> anyhow::Result<()> {
             }
 
             _ = &mut animation_timer, if state.animating => {
-                if let Some(text) = &state.current_text {
-                    // Frame animation (test or normal): try tick_and_draw_frame_anim
-                    let frame_anim_drawn = if test_frame_anim_name.is_some() {
-                        // Test-frame mode: use test signal's animation_ref
-                        current_test_signal.as_ref()
-                            .and_then(|sig| sig.animation_ref.as_deref())
-                            .and_then(|key| app.tick_and_draw_frame_anim(key, &config, current_test_signal.as_ref(), text, &state.draw_state))
-                    } else if !test_all_animations {
-                        // Normal runtime: use current signal's animation_ref
-                        state.current_signal_idx
-                            .filter(|&idx| idx < config.signals.len())
-                            .and_then(|idx| {
-                                let signal = &config.signals[idx];
-                                signal.animation_ref.as_deref()
-                                    .and_then(|key| app.tick_and_draw_frame_anim(key, &config, Some(signal), text, &state.draw_state))
-                            })
-                    } else {
-                        None
-                    };
+                let Some(text) = &state.current_text else {
+                    animation_timer = Box::pin(tokio::time::sleep(frame_delay(&config)));
+                    continue;
+                };
 
-                    if let Some(frame_delay) = frame_anim_drawn {
-                        animation_timer = Box::pin(tokio::time::sleep(frame_delay));
-                        continue;
-                    }
+                // Test mode swaps in its own synthetic signal; otherwise the active config
+                // signal decides. --test-frame and --test-animations are
+                // mutually exclusive, and the synthetic procedural signal
+                // never carries an animation_ref.
+                let active: Option<&config::Signal> = if test_frame_anim_name.is_some() {
+                    current_test_signal.as_ref()
+                } else {
+                    state.current_signal_idx
+                        .filter(|&idx| !test_all_animations && idx < config.signals.len())
+                        .map(|idx| &config.signals[idx])
+                };
 
-                    // Procedural animation fallback
-                    if test_all_animations {
-                        if let Some(ref sig) = current_test_signal {
-                            let total_frames = sig.duration as f64 * config.fps as f64;
-                            state.draw_state.tick(&sig.animation, total_frames, config.fps as f64);
-                            app.draw_text_with_signal(text, &config, Some(sig), &state.draw_state);
+                if let Some(signal) = active
+                    && let Some(key) = signal.animation_ref.as_deref()
+                {
+                    let tick = app.draw_frame_anim(
+                        key,
+                        &config,
+                        Some(signal),
+                        text,
+                        &state.draw_state,
+                        true,
+                    );
+                    match tick {
+                        FrameTick::Continue(delay) => {
+                            animation_timer = Box::pin(tokio::time::sleep(delay));
+                            continue;
                         }
-                    } else if let Some(idx) = state.current_signal_idx {
-                        if idx >= config.signals.len() {
-                            eprintln!("Stale signal index {}, clearing", idx);
-                            state.current_signal_idx = None;
+                        FrameTick::Finished => {
+                            // A non-looping animation reached its last frame.
+                            // Hold it and stop ticking rather than re-committing
+                            // an identical frame until the hide timer fires.
                             state.animating = false;
-                            app.hide();
-                        } else {
-                            let signal = &config.signals[idx];
-                            let total_frames = signal.duration as f64 * config.fps as f64;
-                            state.draw_state.tick(&signal.animation, total_frames, config.fps as f64);
+                            continue;
+                        }
+                        FrameTick::Unavailable => {
+                            eprintln!("Frame animation '{}' unavailable", key);
+                            state.animating = false;
                             app.draw_text_with_signal(text, &config, Some(signal), &state.draw_state);
+                            continue;
                         }
                     }
                 }
-                animation_timer = Box::pin(tokio::time::sleep(Duration::from_micros(1_000_000 / config.fps.max(1))));
+
+                // Procedural transition. Ticks even when a frame animation is
+                // driving the content, so the two compose.
+                if test_all_animations {
+                    if let Some(ref sig) = current_test_signal {
+                        let total_frames = sig.duration as f64 * config.fps as f64;
+                        state.draw_state.tick(&sig.animation, total_frames, config.fps as f64);
+                        app.draw_text_with_signal(text, &config, Some(sig), &state.draw_state);
+                    }
+                } else if let Some(idx) = state.current_signal_idx {
+                    if idx >= config.signals.len() {
+                        eprintln!("Stale signal index {}, clearing", idx);
+                        state.current_signal_idx = None;
+                        state.animating = false;
+                        app.hide();
+                    } else {
+                        let signal = &config.signals[idx];
+                        let total_frames = signal.duration as f64 * config.fps as f64;
+                        state.draw_state.tick(&signal.animation, total_frames, config.fps as f64);
+                        app.draw_text_with_signal(text, &config, Some(signal), &state.draw_state);
+                    }
+                }
+                animation_timer = Box::pin(tokio::time::sleep(frame_delay(&config)));
             }
 
             _ = &mut hide_timer => {

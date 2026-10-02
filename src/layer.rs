@@ -50,11 +50,22 @@ struct RenderKey {
 /// Maximum logical pixels for the animation display area in text+anim mode.
 const MAX_ANIM_DISPLAY_PX: f64 = 200.0;
 
-/// Lightweight reference to a single animation frame for drawing.
-pub struct AnimFrameRef {
+/// A decoded animation frame. Owns the surface; cloning is a refcount bump.
+pub struct AnimFrame {
     pub surface: cairo::ImageSurface,
     pub w: i32,
     pub h: i32,
+}
+
+/// Outcome of advancing a frame animation by one tick.
+pub enum FrameTick {
+    /// Drawn; sleep this long before the next frame.
+    Continue(Duration),
+    /// A non-looping animation reached its last frame. The surface already
+    /// holds that frame, so stop ticking rather than re-committing it forever.
+    Finished,
+    /// Nothing could be drawn.
+    Unavailable,
 }
 
 pub struct FrameCache {
@@ -101,6 +112,12 @@ pub struct LayerApp {
     pub clicked: bool,
     pub frame_cache: FrameCache,
     pub anim_players: HashMap<String, AnimPlayer>,
+    /// Animations that failed to load, so a broken `source` path is reported
+    /// once instead of on every tick.
+    pub failed_animations: std::collections::HashSet<String>,
+    /// Set after a shm buffer allocation fails so the cause is reported once
+    /// rather than leaving the notification silently frozen.
+    pub alloc_failed: bool,
 }
 
 impl LayerApp {
@@ -132,6 +149,8 @@ impl LayerApp {
             clicked: false,
             frame_cache: FrameCache::new(),
             anim_players: HashMap::new(),
+            failed_animations: std::collections::HashSet::new(),
+            alloc_failed: false,
         })
     }
 
@@ -216,11 +235,14 @@ impl LayerApp {
         }
     }
 
-    /// Load an animation player by key (no-op if already loaded).
-    /// Returns true if the animation is available after loading.
-    pub fn load_animation(&mut self, key: &str, asset: &AnimAsset) -> bool {
+        /// Loads an animation player by key. A no-op once loaded, and a recorded
+    /// no-op after a failure so a broken path is not retried every tick.
+    pub fn ensure_animation_loaded(&mut self, key: &str, asset: &AnimAsset) -> bool {
         if self.anim_players.contains_key(key) {
             return true;
+        }
+        if self.failed_animations.contains(key) {
+            return false;
         }
         match AnimPlayer::load(&asset.source, asset.fps, asset.loop_, asset.display) {
             Ok(player) => {
@@ -229,36 +251,37 @@ impl LayerApp {
             }
             Err(e) => {
                 eprintln!("Failed to load animation '{}': {}", key, e);
+                self.failed_animations.insert(key.to_string());
                 false
             }
         }
     }
 
-    /// Tick a frame animation and extract current frame data.
-    /// Returns (cloned frame surface, frame_w, frame_h, fps) or None if not found.
-    /// Clone avoids borrow conflicts — the surface is ref-counted, not deep-copied.
-    pub fn tick_animation(&mut self, anim_key: &str) -> Option<(cairo::ImageSurface, i32, i32, u64)> {
-        let player = self.anim_players.get_mut(anim_key)?;
-        player.tick();
-        let frame = player.current_frame().clone();
-        let w = player.frame_w;
-        let h = player.frame_h;
-        let fps = player.fps;
-        Some((frame, w, h, fps))
+    /// Advances the animation and returns its current frame.
+    /// The surface is refcounted, so the clone is a pointer bump, not a copy.
+    fn animation_frame(player: &AnimPlayer) -> AnimFrame {
+        AnimFrame {
+            surface: player.current_frame().clone(),
+            w: player.frame_w,
+            h: player.frame_h,
+        }
     }
 
-    /// Reset a frame animation to first frame
+    pub fn tick_animation(&mut self, anim_key: &str) -> Option<(AnimFrame, bool)> {
+        let player = self.anim_players.get_mut(anim_key)?;
+        player.tick();
+        Some((Self::animation_frame(player), player.is_done()))
+    }
+
     pub fn reset_animation(&mut self, anim_key: &str) {
         if let Some(player) = self.anim_players.get_mut(anim_key) {
             player.reset();
         }
     }
 
-    /// Get current frame from an animation (no tick)
-    pub fn get_animation_frame(&self, anim_key: &str) -> Option<(cairo::ImageSurface, i32, i32)> {
+    pub fn get_animation_frame(&self, anim_key: &str) -> Option<AnimFrame> {
         let player = self.anim_players.get(anim_key)?;
-        let frame = player.current_frame().clone();
-        Some((frame, player.frame_w, player.frame_h))
+        Some(Self::animation_frame(player))
     }
 
     /// Allocate a zeroed Wayland buffer backed by a SlotPool, returning the
@@ -273,21 +296,22 @@ impl LayerApp {
         let stride = w * 4;
         let needed = (w as usize) * (h as usize) * 4;
 
-        match &mut self.pool {
-            None => {
-                self.pool =
-                    Some(SlotPool::new(needed, &self.shm_state).expect("Failed to create pool"));
-            }
-            Some(pool) => {
-                if pool.len() < needed {
-                    self.pool = Some(
-                        SlotPool::new(needed, &self.shm_state).expect("Failed to resize pool"),
-                    );
+        let needs_new_pool = match &self.pool {
+            None => true,
+            Some(pool) => pool.len() < needed,
+        };
+
+        if needs_new_pool {
+            match SlotPool::new(needed, &self.shm_state) {
+                Ok(pool) => self.pool = Some(pool),
+                Err(e) => {
+                    self.report_alloc_failure(&format!("create shm pool: {}", e));
+                    return None;
                 }
             }
         }
 
-        let pool = self.pool.as_mut().unwrap();
+        let pool = self.pool.as_mut()?;
         let (buffer, canvas) = pool
             .create_buffer(w, h, stride, wl_shm::Format::Argb8888)
             .ok()?;
@@ -296,12 +320,31 @@ impl LayerApp {
             *b = 0;
         }
         // SAFETY: canvas is the exclusive mutable slice from SlotPool::create_buffer.
-        // We extract the raw pointer and drop canvas before creating the Cairo surface,
-        // so there is no aliased mutable reference.
+        // The raw pointer carries no lifetime, and NLL ends the borrow here, so
+        // no aliased mutable reference exists when the Cairo surface wraps it.
         let ptr = canvas.as_mut_ptr();
-        let _ = canvas;
 
+        self.alloc_failed = false;
         Some((buffer, ptr, stride))
+    }
+
+    /// Attaches and commits a freshly drawn buffer over the whole surface.
+    /// All callers have already set self.width/self.height to the damage rect.
+    fn commit_buffer(&self, buffer: &smithay_client_toolkit::shm::slot::Buffer) {
+        let Some(layer) = self.layer_surface.as_ref() else { return };
+        layer.set_size(self.width, self.height);
+        layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
+        layer.wl_surface().damage(0, 0, self.width as i32, self.height as i32);
+        layer.commit();
+    }
+
+    /// Reports a shm allocation failure once. Repeating it every frame at
+    /// animation rate would bury the cause in scrollback.
+    fn report_alloc_failure(&mut self, cause: &str) {
+        if !self.alloc_failed {
+            eprintln!("inno: shm buffer allocation failed ({}), notification stalled", cause);
+            self.alloc_failed = true;
+        }
     }
 
     /// Submit a 1×1 transparent pixel (used to hide or clear the surface).
@@ -313,7 +356,7 @@ impl LayerApp {
         self.height = 1;
 
         if let Some((buffer, _, _)) = self.allocate_buffer(1, 1) {
-            let layer = self.layer_surface.as_ref().unwrap();
+            let Some(layer) = self.layer_surface.as_ref() else { return };
             layer.set_size(1, 1);
             layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
             layer.wl_surface().damage(0, 0, 1, 1);
@@ -324,7 +367,7 @@ impl LayerApp {
     /// Draw animation-only display (replaces text notification entirely).
     fn draw_animation_frame(
         &mut self,
-        frame: &AnimFrameRef,
+        frame: &AnimFrame,
         scale: f64,
     ) {
         if self.layer_surface.is_none() || !self.configured {
@@ -365,11 +408,7 @@ impl LayerApp {
             surface.flush();
         }
 
-        let layer = self.layer_surface.as_ref().unwrap();
-        layer.set_size(self.width, self.height);
-        layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
-        layer.wl_surface().damage(0, 0, w, h);
-        layer.commit();
+        self.commit_buffer(&buffer);
     }
 
     pub fn draw_text_with_signal(
@@ -428,7 +467,7 @@ impl LayerApp {
         config: &AppConfig,
         signal: Option<&Signal>,
         draw_state: &DrawState,
-        frame: &AnimFrameRef,
+        frame: &AnimFrame,
     ) {
         if self.layer_surface.is_none() || !self.configured {
             return;
@@ -522,11 +561,7 @@ impl LayerApp {
             surface.flush();
         }
 
-        let layer = self.layer_surface.as_ref().unwrap();
-        layer.set_size(self.width, self.height);
-        layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
-        layer.wl_surface().damage(0, 0, total_w, total_h);
-        layer.commit();
+        self.commit_buffer(&buffer);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -569,11 +604,7 @@ impl LayerApp {
             self.frame_cache.height = h;
         }
 
-        let layer = self.layer_surface.as_ref().unwrap();
-        layer.set_size(self.width, self.height);
-        layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
-        layer.wl_surface().damage(0, 0, w, h);
-        layer.commit();
+        self.commit_buffer(&buffer);
     }
 
     fn blit_cached(&mut self, scale: f64, draw_state: &DrawState) {
@@ -600,11 +631,7 @@ impl LayerApp {
             surface.flush();
         }
 
-        let layer = self.layer_surface.as_ref().unwrap();
-        layer.set_size(self.width, self.height);
-        layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
-        layer.wl_surface().damage(0, 0, w, h);
-        layer.commit();
+        self.commit_buffer(&buffer);
     }
 
     /// Draw text without signal (for DBus Show command)
@@ -616,52 +643,51 @@ impl LayerApp {
     /// Tick a frame animation forward and draw it according to its display mode.
     /// Returns the per-frame sleep duration on success, or `None` if the
     /// animation doesn't exist or couldn't be loaded.
-    pub fn tick_and_draw_frame_anim(
+    /// Advances a frame animation one step and draws it per its display mode.
+    /// With `advance = false` the current frame is redrawn without ticking.
+    pub fn draw_frame_anim(
         &mut self,
         anim_key: &str,
         config: &AppConfig,
         signal: Option<&Signal>,
         text: &str,
         draw_state: &DrawState,
-    ) -> Option<Duration> {
-        let asset = config.animations.get(anim_key)?;
-        self.load_animation(anim_key, asset);
-        let (surface, w, h, fps) = self.tick_animation(anim_key)?;
-        let frame_ref = AnimFrameRef { surface, w, h };
-        let scale = self.effective_scale(config);
-
-        match asset.display {
-            DisplayMode::Anim => self.draw_animation_frame(&frame_ref, scale),
-            DisplayMode::Text => self.draw_text_with_anim_bg(text, config, signal, draw_state, &frame_ref),
+        advance: bool,
+    ) -> FrameTick {
+        let Some(asset) = config.animations.get(anim_key) else {
+            return FrameTick::Unavailable;
+        };
+        if advance && !self.ensure_animation_loaded(anim_key, asset) {
+            return FrameTick::Unavailable;
         }
 
-        Some(Duration::from_micros(1_000_000 / fps.max(1)))
-    }
-
-    /// Draw the initial frame of a frame animation (no tick) according to its display mode.
-    pub fn draw_initial_frame_anim(
-        &mut self,
-        anim_key: &str,
-        config: &AppConfig,
-        signal: Option<&Signal>,
-        text: &str,
-        draw_state: &DrawState,
-    ) {
-        let Some((surface, w, h)) = self.get_animation_frame(anim_key) else { return };
-        let frame_ref = AnimFrameRef { surface, w, h };
-        let asset = match config.animations.get(anim_key) {
-            Some(a) => a,
-            None => return,
+        let result = if advance {
+            self.tick_animation(anim_key)
+        } else {
+            self.get_animation_frame(anim_key).map(|frame| (frame, false))
         };
+        let Some((frame, finished)) = result else {
+            return FrameTick::Unavailable;
+        };
+
         let scale = self.effective_scale(config);
         match asset.display {
-            DisplayMode::Anim => self.draw_animation_frame(&frame_ref, scale),
-            DisplayMode::Text => self.draw_text_with_anim_bg(text, config, signal, draw_state, &frame_ref),
+            DisplayMode::Anim => self.draw_animation_frame(&frame, scale),
+            DisplayMode::Text => {
+                self.draw_text_with_anim_bg(text, config, signal, draw_state, &frame)
+            }
+        }
+
+        if advance && finished {
+            FrameTick::Finished
+        } else {
+            FrameTick::Continue(Duration::from_micros(1_000_000 / asset.fps.max(1)))
         }
     }
 
     pub fn clear_animations(&mut self) {
         self.anim_players.clear();
+        self.failed_animations.clear();
     }
 
     pub fn hide(&mut self) {

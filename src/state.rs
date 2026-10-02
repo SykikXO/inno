@@ -11,6 +11,17 @@ use crate::sound::SoundWorker;
 
 const MAX_STATE_ENTRIES: usize = 32;
 
+/// How long a notification stays up. `duration = 0` means until dismissed.
+fn notification_duration(sig: &crate::config::Signal) -> std::time::Duration {
+    if sig.duration == 0 {
+        std::time::Duration::MAX
+    } else {
+        // The extra half second is a buffer so a transition still playing when
+        // the timer expires is not cut off mid-frame.
+        std::time::Duration::from_millis(sig.duration.saturating_mul(1000).saturating_add(500))
+    }
+}
+
 pub struct NotificationState {
     pub current_text: Option<String>,
     pub draw_state: DrawState,
@@ -148,23 +159,31 @@ impl NotificationState {
         self.current_signal_idx = sig_idx;
         self.current_text = Some(text.clone());
 
-        // Check for frame animation
+        // A frame animation wraps the procedural one, so a signal may name
+        // both: `animation` supplies the transition, `animation_ref` the
+        // content. Naming an [animations] key in `animation` is shorthand for
+        // both fields pointing at that key.
         if let Some(ref anim_key) = sig.animation_ref {
-            if let Some(asset) = config.animations.get(anim_key) {
-                if app.load_animation(anim_key, asset) {
+            match config.animations.get(anim_key) {
+                Some(asset) if app.ensure_animation_loaded(anim_key, asset) => {
                     app.reset_animation(anim_key);
                     self.animating = true;
-                    app.draw_initial_frame_anim(anim_key, config, Some(sig), &text, &self.draw_state);
-                    return if sig.duration == 0 {
-                        std::time::Duration::MAX
-                    } else {
-                        std::time::Duration::from_millis(
-                            sig.duration.saturating_mul(1000).saturating_add(500),
-                        )
-                    };
+                    app.draw_frame_anim(
+                        anim_key,
+                        config,
+                        Some(sig),
+                        &text,
+                        &self.draw_state,
+                        false,
+                    );
+                    return notification_duration(sig);
                 }
-            } else {
-                eprintln!("Animation '{}' not found in config", anim_key);
+                Some(_) => {
+                    eprintln!("Animation '{}' failed to load", anim_key);
+                }
+                None => {
+                    eprintln!("Animation '{}' not found in config", anim_key);
+                }
             }
         }
 
@@ -202,13 +221,22 @@ impl NotificationState {
         }
     }
 
-    pub fn on_config_reload(&mut self) {
+    pub fn on_config_reload(&mut self, app: &mut LayerApp) {
         self.battery_devices.clear();
         self.prev_battery_agg = None;
         self.prev_state.clear();
         self.prev_signal_msg.clear();
         self.state_key_order.clear();
+        // Both animation paths resolve the active signal through
+        // current_signal_idx, which no longer refers to anything meaningful.
+        // Leaving it cleared while animating stayed true froze the last frame
+        // on screen and woke the timer to draw nothing, so drop the
+        // notification instead.
+        app.hide();
+        self.current_text = None;
         self.current_signal_idx = None;
+        self.animating = false;
+        self.draw_state.reset();
     }
 
     pub fn on_hide_control(&mut self, app: &mut LayerApp) {
