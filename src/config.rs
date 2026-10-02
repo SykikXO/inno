@@ -1,7 +1,7 @@
 use cairo::{FontSlant, FontWeight};
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 // Constants
@@ -312,21 +312,28 @@ impl Default for AppConfig {
 /// Scanning the directory is cheap, unlike decoding it.
 fn natural_duration(dir: &std::path::Path, fps: u64) -> Option<std::time::Duration> {
     let frames = std::fs::read_dir(dir)
-        .map(|entries| {
-            entries
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.path()
-                        .extension()
-                        .and_then(|x| x.to_str())
-                        .is_some_and(|x| x.eq_ignore_ascii_case("png"))
-                })
-                .count()
-        })
+        .map(|entries| entries.filter_map(|e| e.ok()).filter(|e| crate::animation::is_png(&e.path())).count())
         .unwrap_or(0);
 
     (fps > 0 && frames > 0)
         .then(|| std::time::Duration::from_secs_f64(frames as f64 / fps as f64))
+}
+
+/// Resolves `p` against the config's directory unless it is already absolute.
+fn resolve_against(config_dir: Option<&Path>, p: PathBuf) -> PathBuf {
+    if p.is_absolute() {
+        return p;
+    }
+    match config_dir {
+        Some(dir) => dir.join(p),
+        None => p,
+    }
+}
+
+/// True when every RGBA channel sits in the 0.0-1.0 range cairo accepts.
+fn channels_in_range(c: (f64, f64, f64, f64)) -> bool {
+    let (r, g, b, a) = c;
+    [r, g, b, a].iter().all(|v| (0.0..=1.0).contains(v))
 }
 
 fn parse_font_slant(s: &str) -> FontSlant {
@@ -478,8 +485,9 @@ impl AppConfig {
             }
         }
 
-        // Prepare config dir for relative path resolution
-        let config_dir = path.parent().map(PathBuf::from);
+        // Relative paths in the config resolve against the config's own
+        // directory, so a config that works from one location works from a copy.
+        let config_dir = path.parent();
 
         // Parse animations
         for (name, anim_cfg) in file.animations {
@@ -497,13 +505,7 @@ impl AppConfig {
                 None => DisplayMode::Anim,
             };
 
-            let source = if anim_cfg.source.is_absolute() {
-                anim_cfg.source
-            } else if let Some(ref dir) = config_dir {
-                dir.join(&anim_cfg.source)
-            } else {
-                anim_cfg.source
-            };
+            let source = resolve_against(config_dir, anim_cfg.source);
 
             let on_complete = match anim_cfg.on_complete.as_deref() {
                 Some(raw) => match OnComplete::parse(raw) {
@@ -545,21 +547,10 @@ impl AppConfig {
                 .colors
                 .get(&sig_cfg.color)
                 .map(|c| (c[0], c[1], c[2], c[3]))
-                .unwrap_or_else(|| {
-                    eprintln!("Warning: color '{}' not found in [colors], defaulting to white", sig_cfg.color);
-                    (1.0, 1.0, 1.0, 1.0)
-                });
+                // validate() reports the unresolved name, with the signal index.
+                .unwrap_or((1.0, 1.0, 1.0, 1.0));
 
-            let sound_path = sig_cfg.sound.map(|s| {
-                let p = PathBuf::from(&s);
-                if p.is_absolute() {
-                    p
-                } else if let Some(ref dir) = config_dir {
-                    dir.join(&p)
-                } else {
-                    p
-                }
-            });
+            let sound_path = sig_cfg.sound.map(|s| resolve_against(config_dir, PathBuf::from(s)));
 
             let (animation, animation_ref) =
                 self.resolve_animation(sig_cfg.animation.trim(), sig_cfg.animation_ref.as_deref());
@@ -657,8 +648,7 @@ impl AppConfig {
             if sig.icon_size < 1.0 {
                 warnings.push(format!("signal[{}]: icon_size {} is very small", i, sig.icon_size));
             }
-            let (r, g, b, a) = sig.color;
-            if !(0.0..=1.0).contains(&r) || !(0.0..=1.0).contains(&g) || !(0.0..=1.0).contains(&b) || !(0.0..=1.0).contains(&a) {
+            if !channels_in_range(sig.color) {
                 errors.push(format!("signal[{}]: color values must be 0.0-1.0", i));
             }
             if !sig.color_name.is_empty()
@@ -694,15 +684,7 @@ impl AppConfig {
             } else {
                 match std::fs::read_dir(&anim.source) {
                     Ok(entries) => {
-                        let pngs = entries
-                            .filter_map(|e| e.ok())
-                            .filter(|e| {
-                                e.path()
-                                    .extension()
-                                    .and_then(|x| x.to_str())
-                                    .is_some_and(|x| x.eq_ignore_ascii_case("png"))
-                            })
-                            .count();
+                        let pngs = entries.filter_map(|e| e.ok()).filter(|e| crate::animation::is_png(&e.path())).count();
                         if pngs == 0 {
                             errors.push(format!(
                                 "animations.{}: no PNG frames in {}",
@@ -752,13 +734,11 @@ impl AppConfig {
             errors.push("font_size must be >= 1.0".to_string());
         }
 
-        let (r, g, b, a) = self.bg_color;
-        if !(0.0..=1.0).contains(&r) || !(0.0..=1.0).contains(&g) || !(0.0..=1.0).contains(&b) || !(0.0..=1.0).contains(&a) {
+        if !channels_in_range(self.bg_color) {
             errors.push("bg_color values must be 0.0-1.0".to_string());
         }
 
-        let (r, g, b, a) = self.text_color;
-        if !(0.0..=1.0).contains(&r) || !(0.0..=1.0).contains(&g) || !(0.0..=1.0).contains(&b) || !(0.0..=1.0).contains(&a) {
+        if !channels_in_range(self.text_color) {
             errors.push("text_color values must be 0.0-1.0".to_string());
         }
 

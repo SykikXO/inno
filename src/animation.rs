@@ -60,6 +60,14 @@ impl std::fmt::Debug for AnimPlayer {
     }
 }
 
+/// True for a `.png` entry. The extension is compared as bytes because it is
+/// not required to be UTF-8, and exporters disagree on the case.
+pub fn is_png(path: &Path) -> bool {
+    path.extension()
+        .map(std::ffi::OsStr::as_encoded_bytes)
+        .is_some_and(|ext| ext.eq_ignore_ascii_case(b"png"))
+}
+
 /// The PNG signature every frame file must start with.
 const PNG_MAGIC: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 
@@ -78,11 +86,7 @@ impl AnimPlayer {
             .context("Failed to read animation directory")?
             .filter_map(|e| e.ok())
             .map(|e| e.path())
-            .filter(|p| {
-                p.extension()
-                    .and_then(|ext| ext.to_str())
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
-            })
+            .filter(|p| is_png(p))
             .collect();
 
         entries.sort_by(|a, b| nat_compare(a, b));
