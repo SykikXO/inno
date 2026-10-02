@@ -11,7 +11,7 @@
 #               "loop" restarts regardless of loop
 [animations]
 cube_charge = { source = "assets/animations/cube_charging", fps = 30, loop = true, display = "text" }
-ripple = { source = "assets/animations/ripple_charge", fps = 30, loop = true, display = "text" }
+ripple = { source = "assets/animations/ripple_charge", fps = 12, loop = true, display = "text" }
 # A one-shot animation: plays through and then hides, rather than holding its
 # last frame. Change display to "anim" to show the animation with no text.
 once = { source = "assets/animations/ripple_charge", fps = 30, loop = false, display = "text", on_complete = "hide" }
@@ -56,7 +56,8 @@ color = "white"
 threshold = 100
 state = "discharging"
 animation = "fade"
-duration = 3
+animation_ref = "ripple"
+duration = 8
 sound = "assets/sounds/hardware_remove.wav"
 
 [[signal]]
@@ -71,6 +72,7 @@ state = "charging"
 # cube does.
 animation = "fade"
 animation_ref = "cube_charge"
+duration = 8
 sound = "assets/sounds/hardware_insert.wav"
 
 [[signal]]

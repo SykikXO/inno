@@ -82,6 +82,37 @@ fn upower_state_to_string(state: u32) -> String {
     }
 }
 
+/// Current battery percentage, for callers that only need the number.
+///
+/// `--test-signal` uses this so a preview shows the real level rather than a
+/// placeholder that looks like a reading.
+pub async fn battery_percentage_now() -> Option<f64> {
+    let conn = Connection::system().await.ok()?;
+    let proxy = zbus::proxy::Proxy::new(
+        &conn,
+        "org.freedesktop.UPower",
+        "/org/freedesktop/UPower",
+        "org.freedesktop.UPower",
+    )
+    .await
+    .ok()?;
+
+    // EnumerateDevices returns `ao`, object paths, not plain strings.
+    let devices: Vec<zbus::zvariant::OwnedObjectPath> =
+        proxy.call("EnumerateDevices", &()).await.ok()?;
+
+    for path in devices {
+        let path = path.as_str();
+        if !path.contains("battery") {
+            continue;
+        }
+        if let Some((pct, _)) = query_battery_state(&conn, path).await {
+            return Some(pct);
+        }
+    }
+    None
+}
+
 /// Query full battery state from UPower
 async fn query_battery_state(conn: &Connection, path: &str) -> Option<(f64, String)> {
     // Query Percentage

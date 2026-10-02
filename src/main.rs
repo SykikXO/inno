@@ -320,7 +320,17 @@ async fn main() -> anyhow::Result<()> {
             Some(idx) => {
                 eprintln!("Testing signal[{}] {:?}", idx, wanted);
                 current_test_signal = Some(config.signals[idx].clone());
-                let delay = state.show_test_signal(&mut app, &config, &config.signals[idx], idx);
+                // Best effort, and only for the placeholder: if the query fails
+                // the preview still runs, it just leaves {percent} unfilled.
+                let percentage = match dbus::battery_percentage_now().await {
+                    Some(pct) => Some(pct),
+                    None => {
+                        eprintln!("Could not read the battery level, so {{percent}} will be omitted");
+                        None
+                    }
+                };
+                let delay =
+                    state.show_test_signal(&mut app, &config, &config.signals[idx], idx, percentage);
                 hide_timer = Box::pin(tokio::time::sleep(delay));
             }
             None => {

@@ -267,13 +267,12 @@ impl NotificationState {
         config: &AppConfig,
         sig: &crate::config::Signal,
         sig_idx: usize,
+        percentage: Option<f64>,
     ) -> std::time::Duration {
-        let text = format_text(
-            &config.format_template,
-            &sig.icon,
-            &sig.message,
-            Some(50.0),
-        );
+        // Show the real battery level when one is known. A hardcoded placeholder
+        // renders as a plausible reading, which is worse than showing nothing:
+        // it looks like the daemon is reporting the wrong number.
+        let text = format_text(&config.format_template, &sig.icon, &sig.message, percentage);
 
         self.draw_state.reset();
         self.current_signal_idx = Some(sig_idx);
