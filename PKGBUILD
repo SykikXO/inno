@@ -29,4 +29,12 @@ package() {
   for f in assets/sounds/*.wav; do
     [ -f "$f" ] && install -Dm644 "$f" "${pkgdir}/etc/xdg/inno/${f}"
   done
+  # Frame animations referenced by the shipped config. Without these
+  # --check-config fails on a packaged install.
+  for d in assets/animations/*/; do
+    [ -d "$d" ] || continue
+    for f in "$d"*.png; do
+      [ -f "$f" ] && install -Dm644 "$f" "${pkgdir}/etc/xdg/inno/${f}"
+    done
+  done
 }

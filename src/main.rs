@@ -34,7 +34,10 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Period between animation frames. `fps` is validated at config load, but clamp
 /// anyway so a bad value cannot produce a zero period and spin the loop.
 fn frame_delay(config: &AppConfig) -> Duration {
-    Duration::from_micros(1_000_000 / config.fps.clamp(1, 1_000_000))
+    // The lower bound stops a zero fps producing a zero period, which would spin
+    // the loop. The upper bound stops a typo like 1000000 producing a 1us
+    // period, which spins it just as hard.
+    Duration::from_micros(1_000_000 / config.fps.clamp(1, 240))
 }
 
 /// Points the frame clock at a new period.
@@ -335,6 +338,7 @@ async fn main() -> anyhow::Result<()> {
                 eprintln!("inno: reloaded {} signals", config.signals.len());
                 app.frame_cache.clear();
                 app.clear_animations();
+                set_frame_clock(&mut animation_timer, frame_delay(&config));
                 state.on_config_reload(&mut app);
                 if (config.scale - old_scale).abs() > 0.01 {
                     eprintln!("Scale changed, redrawing...");
@@ -413,24 +417,29 @@ async fn main() -> anyhow::Result<()> {
                     state.draw_state.reset();
                     current_test_signal = Some(test_signal);
 
-                    if !config.animations.contains_key(frame_name) {
-                        eprintln!(
+                    match config.animations.get(frame_name) {
+                        // Load before drawing. The timer path ticks before it
+                        // draws, so without this the preview opened on frame 1
+                        // and, with lazy loading, on nothing at all.
+                        Some(asset) => {
+                            if app.ensure_animation_loaded(frame_name, asset, &config) {
+                                app.reset_animation(frame_name);
+                                app.draw_frame_anim(
+                                    frame_name,
+                                    &config,
+                                    current_test_signal.as_ref(),
+                                    &text,
+                                    &state.draw_state,
+                                    false,
+                                );
+                                hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(30)));
+                            }
+                        }
+                        None => eprintln!(
                             "No animation named '{}' in config. Known: {:?}",
                             frame_name,
                             config.animations.keys().collect::<Vec<_>>()
-                        );
-                    } else {
-                        // Draw frame 0 here. The timer path ticks before it
-                        // draws, so leaving the first frame to it skipped it.
-                        app.draw_frame_anim(
-                            frame_name,
-                            &config,
-                            current_test_signal.as_ref(),
-                            &text,
-                            &state.draw_state,
-                            false,
-                        );
-                        hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(30)));
+                        ),
                     }
 
                     // Park the cycle; the animation_timer drives playback.
@@ -498,16 +507,23 @@ async fn main() -> anyhow::Result<()> {
                         .map(|idx| &config.signals[idx])
                 };
 
+                // Point the clock at whatever is about to be ticked: a frame
+                // animation runs at its own rate, everything else at the
+                // general one. Without this the general path inherits the last
+                // frame animation's rate and plays back at the wrong speed.
+                let frame_anim_key = active
+                    .filter(|_| !test_all_animations)
+                    .and_then(|signal| signal.animation_ref.as_deref());
+
+                let wanted = match frame_anim_key.and_then(|key| config.animations.get(key)) {
+                    Some(asset) => Duration::from_micros(1_000_000 / asset.fps.clamp(1, 240)),
+                    None => frame_delay(&config),
+                };
+                set_frame_clock(&mut animation_timer, wanted);
+
                 if let Some(signal) = active
-                    && let Some(key) = signal.animation_ref.as_deref()
+                    && let Some(key) = frame_anim_key
                 {
-                    // A frame animation runs at its own rate, not the general one.
-                    if let Some(asset) = config.animations.get(key) {
-                        set_frame_clock(
-                            &mut animation_timer,
-                            Duration::from_micros(1_000_000 / asset.fps.clamp(1, 1_000_000)),
-                        );
-                    }
                     let tick = app.draw_frame_anim(
                         key,
                         &config,

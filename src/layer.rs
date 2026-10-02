@@ -66,8 +66,12 @@ fn anim_target(asset: &AnimAsset, scale: f64) -> TargetSize {
 /// A decoded animation frame. Owns the surface; cloning is a refcount bump.
 pub struct AnimFrame {
     pub surface: cairo::ImageSurface,
+    /// Decoded size.
     pub w: i32,
     pub h: i32,
+    /// Natural size of the source frames.
+    pub source_w: i32,
+    pub source_h: i32,
 }
 
 /// Outcome of advancing a frame animation by one tick.
@@ -286,8 +290,15 @@ impl LayerApp {
     /// Advances the animation and returns its current frame.
     fn animation_frame(player: &mut AnimPlayer) -> Option<AnimFrame> {
         let (w, h) = (player.frame_w, player.frame_h);
+        let (source_w, source_h) = player.source_size();
         // The surface is refcounted, so handing out a clone is a pointer bump.
-        Some(AnimFrame { surface: player.frame().ok()?.clone(), w, h })
+        Some(AnimFrame {
+            surface: player.frame().ok()?.clone(),
+            w,
+            h,
+            source_w,
+            source_h,
+        })
     }
 
     pub fn tick_animation(&mut self, anim_key: &str) -> Option<(AnimFrame, bool)> {
@@ -388,15 +399,17 @@ impl LayerApp {
     }
 
     /// Draw animation-only display (replaces text notification entirely).
-    fn draw_animation_frame(&mut self, frame: &AnimFrame) {
+    fn draw_animation_frame(&mut self, frame: &AnimFrame, scale: f64) {
         if self.layer_surface.is_none() || !self.configured {
             return;
         }
 
-        // Frames for this display mode are already decoded at display size, so
-        // scaling again here would square the scale factor.
-        let w = frame.w.max(1);
-        let h = frame.h.max(1);
+        // The surface is sized from the source dimensions, not the decoded ones.
+        // Frames are decoded at most at their natural size, so a high-DPI
+        // display still scales up; sizing from the decode size instead would
+        // pin an animation-only notification to 1x while its text card grew.
+        let w = (frame.source_w as f64 * scale).ceil().max(1.0) as i32;
+        let h = (frame.source_h as f64 * scale).ceil().max(1.0) as i32;
 
         self.width = w as u32;
         self.height = h as u32;
@@ -692,7 +705,7 @@ impl LayerApp {
         };
 
         match asset.display {
-            DisplayMode::Anim => self.draw_animation_frame(&frame),
+            DisplayMode::Anim => self.draw_animation_frame(&frame, self.effective_scale(config)),
             DisplayMode::Text => {
                 self.draw_text_with_anim_bg(text, config, signal, draw_state, &frame)
             }

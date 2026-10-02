@@ -36,9 +36,14 @@ pub struct AnimPlayer {
     pub loop_: bool,
     pub display: crate::config::DisplayMode,
     pub frame_idx: usize,
-    /// Dimensions frames are decoded at.
+    /// Dimensions frames are decoded at, which is the display size capped at
+    /// the source size. Never larger than `source_w`/`source_h`.
     pub frame_w: i32,
     pub frame_h: i32,
+    /// Natural frame dimensions. The display size is these times the scale,
+    /// independently of how large the frames were decoded.
+    pub source_w: i32,
+    pub source_h: i32,
     done: bool,
 }
 
@@ -53,6 +58,7 @@ impl std::fmt::Debug for AnimPlayer {
             .field("frame_idx", &self.frame_idx)
             .field("frame_w", &self.frame_w)
             .field("frame_h", &self.frame_h)
+            .field("source", &(self.source_w, self.source_h))
             .field("done", &self.done)
             .finish()
     }
@@ -131,6 +137,8 @@ impl AnimPlayer {
             frame_idx: 0,
             frame_w,
             frame_h,
+            source_w,
+            source_h,
             done: false,
         };
         player.ensure(0)?;
@@ -191,6 +199,11 @@ impl AnimPlayer {
             .as_ref()
             .expect("slot was just filled")
             .1)
+    }
+
+    /// Natural frame dimensions.
+    pub fn source_size(&self) -> (i32, i32) {
+        (self.source_w, self.source_h)
     }
 
     pub fn reset(&mut self) {
@@ -366,9 +379,10 @@ mod tests {
     }
 
     #[test]
-    fn test_load_keeps_first_dimensions_when_a_frame_differs() {
-        // Mismatched frames warn and keep the first frame's size rather than
-        // failing, so one bad export does not kill the whole animation.
+    fn test_load_normalises_a_frame_whose_size_differs() {
+        // The target is fixed from the first frame, and every later frame is
+        // resampled to it, so one stray export at the wrong resolution does not
+        // kill the animation or shift the layout mid-playback.
         let dir = TempDir::new("anim-mismatch");
         dir.write_frames(1);
         let bigger = cairo::ImageSurface::create(cairo::Format::ARgb32, 8, 8).unwrap();
@@ -508,18 +522,38 @@ mod tests {
     }
 
     #[test]
-    fn test_a_large_downscale_stepped_by_halves_matches_a_direct_one() {
-        // The halving exists because bilinear aliases badly at big ratios. This
-        // checks the intermediate surfaces do not change the final result.
+    fn test_a_large_downscale_lands_close_to_a_direct_resample() {
+        // Stepping down by halves exists because cairo's bilinear filter
+        // aliases badly past about 2:1. This compares the stepped result
+        // against resampling straight to the target, on a gradient where a
+        // difference would actually show.
         let dir = TempDir::new("anim-halve");
-        write_sized_frames(dir.path(), 256, 256, 1);
-        let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 256, 256).unwrap();
-        surface
+        let gradient = cairo::ImageSurface::create(cairo::Format::ARgb32, 256, 256).unwrap();
+        {
+            let cr = cairo::Context::new(&gradient).unwrap();
+            for x in 0..256 {
+                let shade = (x as f64 / 255.0).powf(2.2);
+                cr.set_source_rgb(shade, shade, shade);
+                cr.rectangle(x as f64, 0.0, 1.0, 256.0);
+                cr.fill().unwrap();
+            }
+        }
+        gradient.flush();
+        gradient
             .write_to_png(&mut std::fs::File::create(dir.join("frame_0000.png")).unwrap())
             .unwrap();
 
-        let stepped = decode_scaled(dir.join("frame_0000.png").as_path(), (17, 17)).unwrap();
-        assert_eq!((stepped.width(), stepped.height()), (17, 17));
+        let mut stepped = decode_scaled(&dir.join("frame_0000.png"), (16, 16)).unwrap();
+        let mut direct = resample(&gradient, (16, 16)).unwrap();
+
+        // Averaging a gradient is well defined either way, so the two should
+        // agree closely; the step is there to keep the aliasing low, not to
+        // produce a different image.
+        let mut worst = 0i32;
+        for i in 0..16 * 16 {
+            worst = worst.max((stepped.data().unwrap()[i] as i32 - direct.data().unwrap()[i] as i32).abs());
+        }
+        assert!(worst <= 24, "stepped and direct resample differ by {worst}");
     }
 
     // --- looping state machine ------------------------------------------
@@ -591,18 +625,44 @@ mod tests {
     }
 
     #[test]
+    fn test_playback_yields_the_right_frame_at_every_position() {
+        // The property that actually matters about the ring: at every tick the
+        // surface handed back belongs to the current position, including across
+        // wraps where a slot is reused for a different frame. Tagging each frame
+        // with its own index makes a mis-association visible.
+        let dir = TempDir::new("anim-identity");
+        for i in 0..9u8 {
+            write_tagged_frame(dir.path(), &format!("f_{i}.png"), i);
+        }
+        let mut player = load(dir.path(), FPS, true, NATURAL);
+
+        for expected in (0..9).chain(0..9).chain(0..9) {
+            player.frame().expect("the playhead's frame should be resident");
+            assert_eq!(
+                current_tag(&mut player),
+                expected as u8,
+                "expected frame {expected} at position {}",
+                player.frame_idx
+            );
+            player.tick();
+        }
+    }
+
+    #[test]
     fn test_resident_frames_stay_bounded_over_a_long_playthrough() {
-        // The ring is what stops memory growing with frame count; this is the
-        // property that makes lazy decoding safe.
+        // The ring is what stops memory growing with the frame count, which is
+        // what makes decoding every frame up front unnecessary.
         let (_dir, mut player) = player(200, FPS, true);
+        let mut widest = 0;
         for _ in 0..500 {
             player.tick();
-            assert!(
-                resident(&player) <= LOOKAHEAD + 1,
-                "resident frames grew to {}",
-                resident(&player)
-            );
+            widest = widest.max(resident(&player));
         }
+        assert!(
+            widest <= LOOKAHEAD + 1,
+            "resident frames peaked at {widest}, ring holds {}",
+            player.ring.len()
+        );
     }
 
     #[test]
@@ -705,6 +765,16 @@ mod tests {
         surface
             .write_to_png(&mut std::fs::File::create(dir.join(name)).unwrap())
             .unwrap();
+    }
+
+    /// Reads the red tag of the current frame by moving its surface out of the
+    /// ring. A clone would share the same cairo surface, and cairo refuses
+    /// pixel access while another reference exists. The slot is left empty and
+    /// refilled by the next prefetch.
+    fn current_tag(player: &mut AnimPlayer) -> u8 {
+        let slot = player.frame_idx % player.ring.len();
+        let mut surface = player.ring[slot].take().expect("prefetched").1;
+        surface.data().unwrap()[2]
     }
 
     /// Reads the red channel straight from a file. It has to be its own decode:

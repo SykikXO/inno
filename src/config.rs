@@ -810,6 +810,13 @@ impl AppConfig {
                 }
             }
 
+            if anim.on_complete == OnComplete::Loop && !anim.loop_ {
+                warnings.push(format!(
+                    "animations.{}: on_complete = \"loop\" overrides loop = false",
+                    name
+                ));
+            }
+
             // Checked even when the source is unusable, so fixing one problem
             // does not just reveal the next one on the next run.
             if anim.fps == 0 {

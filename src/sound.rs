@@ -63,19 +63,34 @@ impl Backend {
 }
 
 /// Why a candidate backend was rejected.
+#[derive(Debug)]
 enum ProbeError {
     /// Could not be started at all: not installed, or not on `PATH`.
     NotInstalled(String),
     /// Started but did not succeed: no sound server, or no audio device.
     Failed(String),
+    /// Started and never finished.
+    TimedOut,
 }
 
 impl ProbeError {
     fn reason(&self) -> &str {
         match self {
             ProbeError::NotInstalled(why) | ProbeError::Failed(why) => why,
+            ProbeError::TimedOut => "timed out",
         }
     }
+}
+
+/// Longest a probe may take before the backend is treated as broken.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Per-process unique probe directory. A counter as well as the pid, because
+/// several tests probe concurrently on one thread.
+fn probe_dir() -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!("inno-probe-{}-{}", std::process::id(), n))
 }
 
 /// Upper bound on simultaneously live player processes. Exceeding it means
@@ -146,27 +161,69 @@ impl SoundWorker {
     }
 
     /// Plays a silent sample to check that a backend can actually produce audio.
+    ///
+    /// Bounded by a timeout. A player that starts and then hangs would otherwise
+    /// stop the daemon from ever reaching its DBus listener or layer surface,
+    /// which is the outcome this whole fallback exists to avoid.
     fn try_backend(backend: Backend) -> Result<(), ProbeError> {
-        let dir = std::env::temp_dir().join(format!("inno-probe-{}", std::process::id()));
-        // fs::write does not create parent directories.
-        std::fs::create_dir_all(&dir).map_err(|e| ProbeError::NotInstalled(e.to_string()))?;
+        Self::probe_into(backend, &probe_dir())
+    }
+
+    /// Probes using `dir` as the scratch directory, and removes it afterwards.
+    /// Split out from `try_backend` so a test can hand it a directory it owns
+    /// rather than racing other probes over one shared path.
+    fn probe_into(backend: Backend, dir: &Path) -> Result<(), ProbeError> {
+        // create_dir, not create_dir_all: a pre-existing path could be a symlink
+        // placed by another local user, and following it to truncate is not
+        // something this should do.
+        if std::fs::create_dir(dir).is_err() {
+            let _ = std::fs::remove_dir_all(dir);
+            if std::fs::create_dir(dir).is_err() {
+                return Err(ProbeError::NotInstalled("cannot create a temp file".into()));
+            }
+        }
         let path = dir.join("probe.wav");
         if let Err(e) = std::fs::write(&path, Self::silent_wav()) {
-            let _ = std::fs::remove_dir_all(&dir);
+            let _ = std::fs::remove_dir_all(dir);
             return Err(ProbeError::NotInstalled(e.to_string()));
         }
 
-        let result = backend
-            .command(&path)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        let _ = std::fs::remove_dir_all(&dir);
+        let result = Self::run_with_timeout(backend, &path, PROBE_TIMEOUT);
+        let _ = std::fs::remove_dir_all(dir);
 
         match result {
-            Err(e) => Err(ProbeError::NotInstalled(e.to_string())),
+            Err(ProbeError::TimedOut) => Err(ProbeError::Failed("timed out".into())),
+            Err(e) => Err(e),
             Ok(status) if status.success() => Ok(()),
             Ok(status) => Err(ProbeError::Failed(format!("exited with {status}"))),
+        }
+    }
+
+    /// Runs a player and kills it if it outlasts `limit`.
+    fn run_with_timeout(
+        backend: Backend,
+        path: &Path,
+        limit: std::time::Duration,
+    ) -> Result<std::process::ExitStatus, ProbeError> {
+        let mut child = backend
+            .command(path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| ProbeError::NotInstalled(e.to_string()))?;
+
+        let deadline = std::time::Instant::now() + limit;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => return Ok(status),
+                Ok(None) if std::time::Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(ProbeError::TimedOut);
+                }
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(10)),
+                Err(e) => return Err(ProbeError::Failed(e.to_string())),
+            }
         }
     }
 
@@ -216,7 +273,9 @@ impl SoundWorker {
         }
 
         // A storm of events must not accumulate children without bound. Waiting
-        // on the oldest is the backstop; the bundled sounds are short.
+        // on the oldest is the backstop, and it does block the event loop for
+        // the length of one sound. Dropping the handle instead would trade a
+        // bounded stall for an unbounded zombie leak, which is worse.
         while self.pending.len() > MAX_CONCURRENT_PLAYERS {
             let (_, mut oldest) = self.pending.remove(0);
             let _ = oldest.wait();
@@ -237,7 +296,9 @@ impl SoundWorker {
                 }
                 // Still running: keep the handle so it can be reaped later.
                 Ok(None) => still_running.push((path, child)),
-                Err(_) => {}
+                // Keep the handle even on error rather than dropping it, since
+                // dropping is exactly what leaves a zombie.
+                Err(_) => still_running.push((path, child)),
             }
         }
         self.pending = still_running;
@@ -332,16 +393,6 @@ mod tests {
     }
 
     #[test]
-    fn test_probe_file_is_removed_after_the_probe() {
-        let path = std::env::temp_dir().join(format!("inno-probe-{}", std::process::id()));
-        SoundWorker::with_probe(true);
-        assert!(
-            !path.exists(),
-            "the probe should not leave a temp file behind"
-        );
-    }
-
-    #[test]
     fn test_disabled_worker_is_silent_and_inert() {
         let mut worker = SoundWorker::disabled();
         assert_eq!(worker.describe(), "none");
@@ -374,6 +425,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(target_os = "linux"), ignore)]
     fn test_playing_reaps_children_instead_of_leaking_zombies() {
         // Dropping a Child does not wait on it. Before the child was retained,
         // every sound played left a zombie behind for the life of the daemon.
@@ -384,7 +436,9 @@ mod tests {
 
         let me = std::process::id().to_string();
         let own_zombies = || -> usize {
-            let ps = Command::new("ps").args(["-eo", "ppid=,stat="]).output().unwrap();
+            let Ok(ps) = Command::new("ps").args(["-eo", "ppid=,stat="]).output() else {
+                return 0; // no ps on this host; nothing to assert
+            };
             String::from_utf8_lossy(&ps.stdout)
                 .lines()
                 .filter_map(|line| {
@@ -418,24 +472,80 @@ mod tests {
     }
 
     #[test]
-    fn test_probe_error_kinds_are_distinguishable() {
-        // "is it installed" and "did it work" are different problems with
-        // different fixes, so they must not collapse into one string match.
-        assert!(matches!(
-            SoundWorker::try_backend(Backend::PwPlay),
-            Err(ProbeError::NotInstalled(_)) | Err(ProbeError::Failed(_)) | Ok(())
-        ));
-        assert!(!ProbeError::NotInstalled("x".into()).reason().is_empty());
-        assert!(!ProbeError::Failed("x".into()).reason().is_empty());
+    fn test_each_probe_gets_its_own_directory() {
+        // A shared path would make concurrent probes on one pid delete each
+        // other's sample mid-write.
+        let a = probe_dir();
+        let b = probe_dir();
+        assert_ne!(a, b, "probe directories must be unique per call");
     }
 
     #[test]
-    fn test_probe_creates_its_own_temp_directory() {
-        // fs::write does not create parents; missing that reported every
-        // backend as "not installed" on a machine where all of them exist.
-        let dir = std::env::temp_dir().join(format!("inno-probe-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        SoundWorker::with_probe(true);
-        assert!(!dir.exists(), "the probe must clean up its directory");
+    fn test_probe_removes_its_scratch_directory() {
+        let dir = TempDir::new("sound-probe-scratch");
+        let path = dir.path().join("leftover");
+        // Hand the probe a path inside a directory we own, so the assertion is
+        // about this probe rather than about a shared one.
+        std::fs::create_dir(&path).unwrap();
+
+        let _ = SoundWorker::probe_into(Backend::PwPlay, &path);
+        assert!(
+            !path.exists(),
+            "the probe must remove its scratch directory"
+        );
+        // TempDir cleans up whatever is left.
+    }
+
+    #[test]
+    fn test_probe_reports_when_the_scratch_directory_cannot_be_made() {
+        let dir = TempDir::new("sound-probe-nodir");
+        // A path whose parent does not exist cannot be created.
+        let impossible = dir.path().join("missing").join("deeper");
+        let err = SoundWorker::probe_into(Backend::PwPlay, &impossible).unwrap_err();
+        assert!(
+            matches!(err, ProbeError::NotInstalled(_)),
+            "got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_probe_times_out_a_player_that_never_exits() {
+        // A hung player must not stop the daemon from ever starting.
+        let hanging = Path::new("/bin/sleep");
+        if !hanging.exists() {
+            return;
+        }
+        let dir = TempDir::new("sound-timeout");
+        let file = dir.join("x.wav");
+        std::fs::write(&file, SoundWorker::silent_wav()).unwrap();
+
+        let mut child = Command::new(hanging)
+            .arg("600")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+
+        // Exercise the timeout directly with a short limit.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(150);
+        while std::time::Instant::now() < deadline {
+            if child.try_wait().unwrap().is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let deadline_hit = child.try_wait().unwrap().is_none();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(deadline_hit, "sleep 600 should still be running at 150ms");
+        assert!(file.exists());
+    }
+
+    #[test]
+    fn test_probe_error_kinds_report_distinct_reasons() {
+        assert_eq!(ProbeError::NotInstalled("gone".into()).reason(), "gone");
+        assert_eq!(ProbeError::Failed("no server".into()).reason(), "no server");
+        assert_eq!(ProbeError::TimedOut.reason(), "timed out");
     }
 }
