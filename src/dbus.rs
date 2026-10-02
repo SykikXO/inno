@@ -8,7 +8,9 @@ use std::collections::HashMap;
 use std::time::Instant;
 use tokio::sync::mpsc;
 use zbus::Connection;
-use zbus::zvariant::Value;
+use zbus::fdo::PropertiesProxy;
+use zbus::names::InterfaceName;
+use zbus::zvariant::{OwnedValue, Value};
 
 /// Notification event sent to main loop
 #[derive(Debug, Clone)]
@@ -24,8 +26,8 @@ pub struct NotifyEvent {
     pub is_battery: bool,
 }
 
-pub enum Event {
-    Notify(NotifyEvent),
+pub struct Event {
+    pub notify: NotifyEvent,
 }
 
 /// Extract f64 from a Value, unwrapping nested variants
@@ -113,33 +115,36 @@ pub async fn battery_percentage_now() -> Option<f64> {
     None
 }
 
+/// Reads one property off an object. `PropertiesProxy` is zbus's own wrapper
+/// over org.freedesktop.DBus.Properties, so the method name and the reply
+/// deserialization do not need writing out by hand.
+async fn get_property(
+    conn: &Connection,
+    destination: &str,
+    path: &str,
+    interface: &str,
+    property: &str,
+) -> Option<OwnedValue> {
+    let proxy = PropertiesProxy::builder(conn)
+        .destination(destination)
+        .ok()?
+        .path(path)
+        .ok()?
+        .build()
+        .await
+        .ok()?;
+    proxy.get(InterfaceName::try_from(interface).ok()?, property).await.ok()
+}
+
 /// Query full battery state from UPower
 async fn query_battery_state(conn: &Connection, path: &str) -> Option<(f64, String)> {
-    // Query Percentage
-    let percentage = conn
-        .call_method(
-            Some("org.freedesktop.UPower"),
-            path,
-            Some("org.freedesktop.DBus.Properties"),
-            "Get",
-            &("org.freedesktop.UPower.Device", "Percentage"),
-        )
-        .await
-        .ok()
-        .and_then(|reply| reply.body().deserialize::<Value>().ok().and_then(|v| extract_f64(&v)))?;
+    const IFACE: &str = "org.freedesktop.UPower.Device";
+    let value = get_property(conn, "org.freedesktop.UPower", path, IFACE, "Percentage").await?;
+    let percentage = extract_f64(&value)?;
 
-    // Query State
-    let state = conn
-        .call_method(
-            Some("org.freedesktop.UPower"),
-            path,
-            Some("org.freedesktop.DBus.Properties"),
-            "Get",
-            &("org.freedesktop.UPower.Device", "State"),
-        )
+    let state = get_property(conn, "org.freedesktop.UPower", path, IFACE, "State")
         .await
-        .ok()
-        .and_then(|reply| reply.body().deserialize::<Value>().ok().and_then(|v| extract_u32(&v)))
+        .and_then(|v| extract_u32(&v))
         .map(upower_state_to_string)
         .unwrap_or_else(|| "unknown".to_string());
 
@@ -148,38 +153,15 @@ async fn query_battery_state(conn: &Connection, path: &str) -> Option<(f64, Stri
 
 /// Query BlueZ device alias (name)
 async fn query_bluez_alias(conn: &Connection, path: &str) -> Option<String> {
-    match conn
-        .call_method(
-            Some("org.bluez"),
-            path,
-            Some("org.freedesktop.DBus.Properties"),
-            "Get",
-            &("org.bluez.Device1", "Alias"),
-        )
-        .await
-    {
-        Ok(reply) => match reply.body().deserialize::<Value>() {
-            Ok(v) => {
-                let alias = match v {
-                    Value::Str(s) => Some(s.to_string()),
-                    Value::Value(inner) => match *inner {
-                        Value::Str(s) => Some(s.to_string()),
-                        _ => None,
-                    },
-                    _ => None,
-                };
-                if alias.is_none() {
-                    eprintln!("Failed to extract alias from Value: {:?}", reply.body());
-                }
-                alias
-            }
-            Err(e) => {
-                eprintln!("Failed to deserialize BlueZ Alias: {}", e);
-                None
-            }
+    let value = get_property(conn, "org.bluez", path, "org.bluez.Device1", "Alias").await?;
+    match &*value {
+        Value::Str(s) => Some(s.to_string()),
+        Value::Value(inner) => match inner.as_ref() {
+            Value::Str(s) => Some(s.to_string()),
+            _ => None,
         },
-        Err(e) => {
-            eprintln!("Failed to call Get Alias: {}", e);
+        other => {
+            eprintln!("Failed to extract alias from Value: {:?}", other);
             None
         }
     }
@@ -190,8 +172,10 @@ pub async fn run_dbus_listener(
     tx: mpsc::Sender<Event>,
     events: Vec<EventConfig>,
 ) -> anyhow::Result<()> {
-    let system_events: Vec<_> = events.iter().filter(|e| e.bus == "system").collect();
-    let session_events: Vec<_> = events.iter().filter(|e| e.bus == "session").collect();
+    // partition moves each config into exactly one bus. Collecting references
+    // and cloning them per listener cost a heap allocation per config field.
+    let (session_events, system_events): (Vec<EventConfig>, Vec<EventConfig>) =
+        events.into_iter().partition(|e| e.bus == "session");
 
     eprintln!(
         "Starting DBus listeners: {} system, {} session events",
@@ -203,9 +187,9 @@ pub async fn run_dbus_listener(
 
     if !system_events.is_empty() {
         let tx_clone = tx.clone();
-        let events_clone: Vec<EventConfig> = system_events.into_iter().cloned().collect();
+        let events = system_events;
         handles.push(tokio::spawn(async move {
-            if let Err(e) = run_bus_listener("system", tx_clone, events_clone).await {
+            if let Err(e) = run_bus_listener("system", tx_clone, events).await {
                 eprintln!("System bus listener error: {}", e);
             }
         }));
@@ -213,16 +197,12 @@ pub async fn run_dbus_listener(
 
     if !session_events.is_empty() {
         let tx_clone = tx.clone();
-        let events_clone: Vec<EventConfig> = session_events.into_iter().cloned().collect();
+        let events = session_events;
         handles.push(tokio::spawn(async move {
-            if let Err(e) = run_bus_listener("session", tx_clone, events_clone).await {
+            if let Err(e) = run_bus_listener("session", tx_clone, events).await {
                 eprintln!("Session bus listener error: {}", e);
             }
         }));
-    }
-
-    if handles.is_empty() {
-        return Ok(());
     }
 
     join_all(handles).await;
@@ -391,7 +371,7 @@ async fn run_bus_listener(
                 is_battery: is_battery_event,
             };
 
-            if tx.send(Event::Notify(notify_event)).await.is_err() {
+            if tx.send(Event { notify: notify_event }).await.is_err() {
                 return Ok(());
             }
 

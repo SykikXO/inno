@@ -485,20 +485,16 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
-            Some(event) = rx.recv() => {
-                match event {
-                    Event::Notify(notify_event) => {
-                        if let Some(delay) = state.process_notify(
-                            &mut app,
-                            &config,
-                            &mut sound_worker,
-                            &notify_event,
-                            &battery_percentage,
-                            &battery_state_shared,
-                        ) {
-                            hide_timer = Box::pin(tokio::time::sleep(delay));
-                        }
-                    }
+            Some(Event { notify: notify_event }) = rx.recv() => {
+                if let Some(delay) = state.process_notify(
+                    &mut app,
+                    &config,
+                    &mut sound_worker,
+                    &notify_event,
+                    &battery_percentage,
+                    &battery_state_shared,
+                ) {
+                    hide_timer = Box::pin(tokio::time::sleep(delay));
                 }
             }
 
