@@ -32,6 +32,9 @@ cargo build --release
 
 # Validate config without running
 ./target/release/inno --check-config
+
+# Preview one signal, transition and frame animation together
+./target/release/inno --test-signal Charging --no-dbus
 ```
 
 ## Installation
@@ -201,6 +204,27 @@ notification lasts exactly as long as the animation does, derived from the
 frame count and rate, so there is nothing to keep in sync by hand. Omitted
 with no animation it falls back to 5 seconds. An explicit value always wins,
 and `duration = 0` means until dismissed.
+
+### Previewing
+
+`--test-signal <text>` renders the signal whose `message` matches, through the
+same path a real DBus event takes, so a transition and a frame animation can be
+checked together without producing the event. `--test-frame <name>` previews a
+bare asset instead, and `--test-animations` cycles the procedural ones.
+
+`INNO_TRACE=1` logs one line per frame with the elapsed time, frame index, and
+transition alpha, which is how playback rate and drift can be measured without a
+compositor:
+
+```
+INNO_TRACE=1 inno --test-signal Charging 2>&1 | grep TRACE
+```
+
+`scripts/render-verify.sh` renders notifications inside a nested Hyprland on its
+own socket and reports the bounding box of everything that changed against a
+no-daemon baseline. It needs `grim` and `python3` with Pillow. Both matter: a
+screenshot of a live desktop contains a wallpaper and a terminal, so "there are
+bright pixels in the middle" proves nothing.
 
 ### Sounds
 
