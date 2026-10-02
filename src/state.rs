@@ -120,7 +120,12 @@ impl NotificationState {
     ) -> Option<std::time::Duration> {
         let is_battery = notify_event.is_battery;
 
-        let (pct_for_match, state) = if is_battery {
+        // Two numbers, deliberately. `pct_for_match` always has a value because
+        // threshold matching needs one. `display_pct` stays None when the event
+        // carried no reading, because a fabricated plausible percentage renders
+        // as a number the daemon did not measure: a Bluetooth connect with no
+        // battery in it used to display "AirPods connected 100%".
+        let (pct_for_match, display_pct, state) = if is_battery {
             let pct = notify_event.percentage.unwrap_or(100.0);
             let st = notify_event.state.clone().unwrap_or_else(|| "unknown".to_string());
             self.battery_devices.insert(notify_event.path.clone(), (pct, st));
@@ -128,16 +133,14 @@ impl NotificationState {
             let (agg_pct, agg_state) = aggregate_battery_state(&self.battery_devices, &config.battery_mode);
 
             battery_percentage.store((agg_pct * 100.0) as u32, Ordering::Relaxed);
-            if let Ok(mut s) = battery_state_shared.write() {
-                *s = agg_state.clone();
-            }
+            // Recover from a poisoned lock rather than silently giving up: the
+            // cached state is still readable, and control.rs already recovers on
+            // its side, so the two disagreed about what a poisoned lock means.
+            *battery_state_shared.write().unwrap_or_else(|e| e.into_inner()) = agg_state.clone();
 
-            (agg_pct, agg_state)
+            (agg_pct, Some(agg_pct), agg_state)
         } else {
-            let pct = notify_event.percentage.unwrap_or(100.0);
-            let st = notify_event.state.clone().unwrap_or_else(|| "unknown".to_string());
-
-            (pct, st)
+            (notify_event.percentage.unwrap_or(100.0), notify_event.percentage, notify_event.state.clone().unwrap_or_else(|| "unknown".to_string()))
         };
 
         let sig_idx = config.find_signal_idx(pct_for_match, &state);
@@ -185,7 +188,7 @@ impl NotificationState {
             }
 
             if let Some(sig) = signal {
-                return Some(self.show_notification(app, config, sound_worker, sig, sig_idx, notify_event, pct_for_match));
+                return Some(self.show_notification(app, config, sound_worker, sig, sig_idx, notify_event, display_pct));
             }
         }
 
@@ -243,10 +246,10 @@ impl NotificationState {
         sig: &crate::config::Signal,
         sig_idx: Option<usize>,
         notify_event: &NotifyEvent,
-        pct_for_match: f64,
+        pct: Option<f64>,
     ) -> std::time::Duration {
         let dynamic_msg = sig.message.replace("{message}", &notify_event.message);
-        let text = format_text(&config.format, &sig.icon, &dynamic_msg, Some(pct_for_match));
+        let text = format_text(&config.format, &sig.icon, &dynamic_msg, pct);
 
         if let Some(ref sound_path) = sig.sound {
             sound_worker.play(sound_path);

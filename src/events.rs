@@ -62,32 +62,40 @@ pub struct MatchRule {
     pub sender: Option<String>,
 }
 
+/// Quotes a value for a DBus match rule. A quote or backslash inside the value
+/// has to be escaped, or the rule fails to parse and `AddMatch` takes the whole
+/// listener down, which is how one stray apostrophe in an event file used to
+/// silence every notification.
+fn quoted(value: &str) -> String {
+    format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
+}
+
 impl MatchRule {
     /// Build a DBus match rule string
     pub fn to_match_string(&self) -> String {
         let mut parts = vec!["type='signal'".to_string()];
 
         if let Some(iface) = &self.interface {
-            parts.push(format!("interface='{}'", iface));
+            parts.push(format!("interface={}", quoted(iface)));
         }
         if let Some(member) = &self.member {
-            parts.push(format!("member='{}'", member));
+            parts.push(format!("member={}", quoted(member)));
         }
         if let Some(path) = &self.path {
-            parts.push(format!("path='{}'", path));
+            parts.push(format!("path={}", quoted(path)));
         }
         // NOTE: Do NOT include path_prefix as path_namespace here.
         // DBus path_namespace requires '/' separated hierarchy matching,
         // so path_namespace='/devices/battery_BAT' won't match '/devices/battery_BAT0'.
         // We handle prefix filtering ourselves in matches() using starts_with.
         if let Some(arg0) = &self.arg0 {
-            parts.push(format!("arg0='{}'", arg0));
+            parts.push(format!("arg0={}", quoted(arg0)));
         }
         if let Some(sender) = &self.sender {
-            parts.push(format!("sender='{}'", sender));
+            parts.push(format!("sender={}", quoted(sender)));
         }
 
-        parts.join(",")
+        parts.join(", ")
     }
 
     /// Check if a message matches this rule

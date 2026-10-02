@@ -305,36 +305,35 @@ async fn run_bus_listener(
             let is_battery_event = event.match_rule.arg0.as_deref() == Some("org.freedesktop.UPower.Device");
             let is_bluetooth_event = event.match_rule.arg0.as_deref() == Some("org.bluez.Device1");
 
-            let (percentage, state) = if is_battery_event {
-                // Query full battery state from UPower
-                if let Some((pct, st)) = query_battery_state(&conn, &path).await {
-                    eprintln!("Battery state query: {:.0}% {}", pct, st);
-                    (Some(pct), Some(st))
-                } else {
-                    // Fall back to extracting from changed properties
-                    let pct = changed_props.get("Percentage").and_then(|v| extract_f64(v));
-                    let st = changed_props
-                        .get("State")
-                        .and_then(|v| extract_u32(v))
-                        .map(upower_state_to_string);
-                    (pct, st)
+            // One extraction path for every event kind: the event's own
+            // [extract] table names the property behind each field and
+            // [state_map] turns it into a state string. Battery events used to
+            // hardcode "Percentage" and "State" and call upower_state_to_string
+            // instead, so editing either table in a battery event file changed
+            // nothing at all.
+            let mut percentage = None;
+            let mut state = None;
+            for (field, property) in &event.extract {
+                let Some(value) = changed_props.get(property) else { continue };
+                match field.as_str() {
+                    "percentage" => percentage = extract_f64(value),
+                    "state" => state = Some(value_to_string(value, &event.state_map)),
+                    _ => {}
                 }
-            } else {
-                // Non-battery events: extract from changed properties
-                let mut pct = None;
-                let mut st = None;
-                for (field_name, prop_path) in &event.extract {
-                    if let Some(value) = changed_props.get(prop_path) {
-                        if field_name == "percentage" {
-                            pct = extract_f64(value);
-                        }
-                        if field_name == "state" {
-                            st = Some(value_to_string(value, &event.state_map));
-                        }
-                    }
-                }
-                (pct, st)
-            };
+            }
+
+            // A battery sometimes reports its properties through a separate
+            // UPower Get instead of the PropertiesChanged body. Ask once, and
+            // only when the body carried no reading, so the common case costs no
+            // round trip on a runtime that also drives the frame clock.
+            if is_battery_event
+                && percentage.is_none()
+                && let Some((pct, st)) = query_battery_state(&conn, &path).await
+            {
+                eprintln!("Battery state query: {:.0}% {}", pct, st);
+                percentage = Some(pct);
+                state = Some(st);
+            }
 
             // Build values map
             let mut values: HashMap<String, String> = HashMap::new();
