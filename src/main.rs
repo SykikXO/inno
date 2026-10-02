@@ -56,6 +56,53 @@ fn frame_delay(config: &AppConfig) -> Duration {
     frame_period(config.fps)
 }
 
+/// Loads the config and runs the checks `validate()` performs. Returns None when
+/// the result is unusable, so a reload can keep the config it already had
+/// rather than bricking the daemon on a half-typed file.
+///
+/// `validate()` used to run only under `--check-config`, which meant every
+/// error it reports was unenforced in the daemon: `fps = 0` reached the frame
+/// clock and ran it at the 240 Hz ceiling, and a bad animation path was only
+/// discovered when a notification failed to draw.
+fn load_config() -> Option<AppConfig> {
+    let cfg = AppConfig::load();
+    let (errors, warnings) = cfg.validate();
+    for w in &warnings {
+        eprintln!("inno: config warning: {}", w);
+    }
+    if errors.is_empty() {
+        return Some(cfg);
+    }
+    for e in &errors {
+        eprintln!("inno: config error: {}", e);
+    }
+    None
+}
+
+/// Applies a new config to the running daemon. Both reload paths go through
+/// here: they used to be two copies that had drifted, so a `general.fps` or
+/// `general.scale` edit applied over DBus silently did not take effect while
+/// the same edit saved to disk did.
+fn reload_config(
+    config: &mut AppConfig,
+    app: &mut LayerApp,
+    state: &mut NotificationState,
+    animation_timer: &mut tokio::time::Interval,
+) {
+    let old_scale = config.scale;
+    let Some(new) = load_config() else { return };
+    *config = new;
+    eprintln!("inno: reloaded {} signals", config.signals.len());
+    app.frame_cache.clear();
+    app.clear_animations();
+    set_frame_clock(animation_timer, frame_delay(config));
+    state.on_config_reload(app, config);
+    if (config.scale - old_scale).abs() > 0.01 {
+        eprintln!("Scale changed, redrawing...");
+        app.scale_changed = true;
+    }
+}
+
 /// Resolves the signal driving the current notification.
 ///
 /// Test modes substitute a synthetic signal. Otherwise it is whichever config
@@ -184,7 +231,13 @@ async fn main() -> anyhow::Result<()> {
         println!("inno is running in debug mode.");
     }
 
-    let mut config = AppConfig::load();
+    let mut config = match load_config() {
+        Some(cfg) => cfg,
+        None => {
+            eprintln!("inno: refusing to start with an invalid config");
+            std::process::exit(1);
+        }
+    };
     eprintln!("inno: loaded {} signals", config.signals.len());
 
     let event_configs = events::load_events();
@@ -200,7 +253,10 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("inno: sounds disabled");
         SoundWorker::disabled()
     } else {
-        let worker = SoundWorker::probe();
+        // Probing spawns up to four players with a 2s timeout each. On a
+        // current-thread runtime that is up to 8s where org.freedesktop.Notifications
+        // does not exist yet, because nothing else gets to run while it polls.
+        let worker = tokio::task::spawn_blocking(SoundWorker::probe).await?;
         eprintln!("inno: sound backend: {}", worker.describe());
         worker
     };
@@ -408,17 +464,7 @@ async fn main() -> anyhow::Result<()> {
         tokio::select! {
             Some(()) = config_rx.recv() => {
                 eprintln!("Config file changed, reloading...");
-                let old_scale = config.scale;
-                config = AppConfig::load();
-                eprintln!("inno: reloaded {} signals", config.signals.len());
-                app.frame_cache.clear();
-                app.clear_animations();
-                set_frame_clock(&mut animation_timer, frame_delay(&config));
-                state.on_config_reload(&mut app, &config);
-                if (config.scale - old_scale).abs() > 0.01 {
-                    eprintln!("Scale changed, redrawing...");
-                    app.scale_changed = true;
-                }
+                reload_config(&mut config, &mut app, &mut state, &mut animation_timer);
             }
 
             Some(control_event) = control_rx.recv() => {
@@ -439,11 +485,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                     ControlEvent::Reload => {
                         eprintln!("DBus: Reload config");
-                        config = AppConfig::load();
-                        eprintln!("inno: reloaded {} signals", config.signals.len());
-                        app.frame_cache.clear();
-                        app.clear_animations();
-                        state.on_config_reload(&mut app, &config);
+                        reload_config(&mut config, &mut app, &mut state, &mut animation_timer);
                     }
                 }
             }
