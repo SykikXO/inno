@@ -2,7 +2,7 @@
 //!
 //! Listens for DBus signals based on configurable event definitions.
 
-use crate::events::EventConfig;
+use crate::events::{self, EventConfig};
 use futures::{StreamExt, future::join_all};
 use std::collections::HashMap;
 use std::time::Instant;
@@ -375,7 +375,7 @@ async fn run_bus_listener(
             }
 
             // Format message
-            let message = event.format.template.render(&values);
+            let message = events::render(&event.format.message, &values);
 
             eprintln!(
                 "Event '{}' triggered: {} (pct={:?}, state={:?})",

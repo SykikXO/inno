@@ -6,79 +6,15 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone)]
-enum TemplateSegment {
-    Literal(String),
-    Placeholder(String),
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct Template {
-    segments: Vec<TemplateSegment>,
-}
-
-impl Template {
-    pub fn parse(s: &str) -> Self {
-        let mut segments = Vec::new();
-        let mut chars = s.chars().peekable();
-        let mut literal = String::new();
-
-        while let Some(c) = chars.next() {
-            if c == '{' {
-                let mut placeholder = String::new();
-                let mut found_close = false;
-                while let Some(&nc) = chars.peek() {
-                    chars.next();
-                    if nc == '}' {
-                        found_close = true;
-                        break;
-                    }
-                    placeholder.push(nc);
-                }
-                if found_close {
-                    if !literal.is_empty() {
-                        segments.push(TemplateSegment::Literal(std::mem::take(&mut literal)));
-                    }
-                    segments.push(TemplateSegment::Placeholder(placeholder));
-                } else {
-                    literal.push('{');
-                    literal.push_str(&placeholder);
-                }
-            } else {
-                literal.push(c);
-            }
-        }
-        if !literal.is_empty() {
-            segments.push(TemplateSegment::Literal(literal));
-        }
-        Self { segments }
+/// Substitutes `{key}` in an event's message for each value supplied. A key
+/// with no value is left exactly as written, so a typo in an event file shows
+/// up in the notification instead of quietly rendering as nothing.
+pub fn render(message: &str, values: &HashMap<String, String>) -> String {
+    let mut out = message.to_string();
+    for (key, value) in values {
+        out = out.replace(&format!("{{{key}}}"), value);
     }
-
-    pub fn render(&self, values: &HashMap<String, String>) -> String {
-        let mut capacity = 0;
-        for seg in &self.segments {
-            capacity += match seg {
-                TemplateSegment::Literal(s) => s.len(),
-                TemplateSegment::Placeholder(key) => values.get(key).map_or(key.len() + 2, |v| v.len()),
-            };
-        }
-        let mut result = String::with_capacity(capacity);
-        for seg in &self.segments {
-            match seg {
-                TemplateSegment::Literal(s) => result.push_str(s),
-                TemplateSegment::Placeholder(key) => {
-                    if let Some(v) = values.get(key) {
-                        result.push_str(v);
-                    } else {
-                        result.push('{');
-                        result.push_str(key);
-                        result.push('}');
-                    }
-                }
-            }
-        }
-        result
-    }
+    out
 }
 
 /// An event definition loaded from TOML
@@ -185,8 +121,6 @@ impl MatchRule {
 pub struct FormatConfig {
     #[serde(default)]
     pub message: String,
-    #[serde(skip)]
-    pub template: Template,
 }
 
 /// Condition configuration for triggering notifications
@@ -273,9 +207,7 @@ fn load_events_inner(quiet: bool) -> Vec<EventConfig> {
 /// Load a single event config file
 fn load_event_file(path: &PathBuf) -> Result<EventConfig, String> {
     let content = std::fs::read_to_string(path).map_err(|e| format!("Read error: {}", e))?;
-    let mut event: EventConfig = toml::from_str(&content).map_err(|e| format!("Parse error: {}", e))?;
-    event.format.template = Template::parse(&event.format.message);
-    Ok(event)
+    toml::from_str(&content).map_err(|e| format!("Parse error: {}", e))
 }
 
 /// Built-in battery event as fallback
@@ -303,7 +235,7 @@ fn builtin_battery_event() -> EventConfig {
         },
         extract,
         state_map,
-        format: FormatConfig { message: "{percentage}%".to_string(), template: Template::parse("{percentage}%") },
+        format: FormatConfig { message: "{percentage}%".to_string() },
         conditions: ConditionsConfig { trigger_on: vec![], debounce_ms: 1000, require_all: false },
     }
 }
@@ -389,17 +321,13 @@ mod tests {
         values.insert("percentage".into(), "75".into());
         values.insert("state".into(), "charging".into());
 
-        let tmpl = Template::parse("{percentage}% ({state})");
-        assert_eq!(tmpl.render(&values), "75% (charging)");
-        let tmpl2 = Template::parse("Battery at {percentage}%");
-        assert_eq!(tmpl2.render(&values), "Battery at 75%");
+        assert_eq!(render("{percentage}% ({state})", &values), "75% (charging)");
+        assert_eq!(render("Battery at {percentage}%", &values), "Battery at 75%");
     }
 
     #[test]
     fn test_format_message_missing_key() {
-        let values = HashMap::new();
-        let tmpl = Template::parse("{missing}");
-        assert_eq!(tmpl.render(&values), "{missing}");
+        assert_eq!(render("{missing}", &HashMap::new()), "{missing}");
     }
 
     #[test]
@@ -444,36 +372,41 @@ mod tests {
     }
 
     #[test]
-    fn test_template_multiple_values() {
+    fn test_render_multiple_values() {
         let mut values = HashMap::new();
         values.insert("name".into(), "AirPods".into());
         values.insert("state".into(), "connected".into());
         values.insert("percentage".into(), "85".into());
 
-        let tmpl = Template::parse("{name} {state} at {percentage}%");
-        assert_eq!(tmpl.render(&values), "AirPods connected at 85%");
+        assert_eq!(render("{name} {state} at {percentage}%", &values), "AirPods connected at 85%");
     }
 
     #[test]
-    fn test_template_empty_values_map() {
-        let values = HashMap::new();
-        let tmpl = Template::parse("{a} and {b}");
-        // Missing keys should be rendered as {key}
-        assert_eq!(tmpl.render(&values), "{a} and {b}");
+    fn test_render_empty_values_map() {
+        // Missing keys render as {key}, so a typo in an event file is visible.
+        assert_eq!(render("{a} and {b}", &HashMap::new()), "{a} and {b}");
     }
 
     #[test]
-    fn test_template_literal_only() {
-        let values = HashMap::new();
-        let tmpl = Template::parse("no placeholders here");
-        assert_eq!(tmpl.render(&values), "no placeholders here");
+    fn test_render_literal_only() {
+        assert_eq!(render("no placeholders here", &HashMap::new()), "no placeholders here");
     }
 
     #[test]
-    fn test_template_empty_input() {
-        let values = HashMap::new();
-        let tmpl = Template::parse("");
-        assert_eq!(tmpl.render(&values), "");
+    fn test_render_empty_input() {
+        assert_eq!(render("", &HashMap::new()), "");
+    }
+
+    #[test]
+    fn test_render_unclosed_brace_is_literal() {
+        assert_eq!(render("hello {world", &HashMap::new()), "hello {world");
+    }
+
+    #[test]
+    fn test_render_missing_key_echoed() {
+        let mut values = HashMap::new();
+        values.insert("percentage".into(), "80".into());
+        assert_eq!(render("{percentage}% ({state})", &values), "80% ({state})");
     }
 
     #[test]
@@ -584,16 +517,13 @@ debounce_ms = 1000
     }
 
     #[test]
-    fn test_load_event_file_compiles_the_message_template() {
-        // format.template is skipped during deserialization and compiled from
-        // format.message afterwards; if that step is lost the notification text
-        // renders as the raw placeholder.
+    fn test_load_event_file_keeps_the_message_intact() {
         let (_dir, path) = write(VALID_EVENT);
         let event = load_event_file(&path).unwrap();
 
         let mut values = HashMap::new();
-        values.insert("percentage".to_string(), "80".to_string());
-        assert_eq!(event.format.template.render(&values), "80%");
+        values.insert("percentage".into(), "80".into());
+        assert_eq!(render(&event.format.message, &values), "80%");
     }
 
     #[test]
