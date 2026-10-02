@@ -482,8 +482,8 @@ async fn main() -> anyhow::Result<()> {
                         duration: Some(30),
                         sound: None,
                     };
-                    let text = draw::format_text(
-                        &config.format_template,
+                    let text = config::format_text(
+                        &config.format,
                         &test_signal.icon,
                         &test_signal.message,
                         Some(50.0),
@@ -539,8 +539,8 @@ async fn main() -> anyhow::Result<()> {
                         sound: None,
                     };
 
-                    let text = draw::format_text(
-                        &config.format_template,
+                    let text = config::format_text(
+                        &config.format,
                         &test_signal.icon,
                         &test_signal.message,
                         Some(50.0),

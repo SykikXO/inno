@@ -1,4 +1,4 @@
-use crate::config::{Animation, AppConfig, FormatTemplate, Signal};
+use crate::config::{Animation, AppConfig, Signal};
 use cairo::{Context, LinearGradient};
 use std::f64::consts::PI;
 
@@ -82,11 +82,6 @@ fn rounded_rect(cr: &Context, x: f64, y: f64, w: f64, h: f64, radius: f64) {
 fn measure_icon(cr: &Context, icon: &str, size: f64) -> cairo::TextExtents {
     cr.set_font_size(size);
     cr.text_extents(icon).unwrap()
-}
-
-/// Format notification text using pre-compiled template
-pub fn format_text(fmt: &FormatTemplate, icon: &str, message: &str, percent: Option<f64>) -> String {
-    fmt.render(icon, message, percent)
 }
 
 /// Measure text and icon dimensions without rendering
@@ -205,35 +200,6 @@ pub fn draw_with_signal(
 mod tests {
     use super::*;
     use crate::config;
-    use crate::config::FormatTemplate;
-
-    #[test]
-    fn test_format_text_with_percent() {
-        let tmpl = FormatTemplate::parse("{icon} {message} {percent}%");
-        let result = format_text(&tmpl, "BAT", "Battery", Some(75.0));
-        assert_eq!(result, "BAT Battery 75%");
-    }
-
-    #[test]
-    fn test_format_text_without_percent() {
-        let tmpl = FormatTemplate::parse("{icon} {message} {percent}%");
-        let result = format_text(&tmpl, "NET", "Connected", None);
-        assert_eq!(result, "NET Connected");
-    }
-
-    #[test]
-    fn test_format_text_percent_placeholder_only() {
-        let tmpl = FormatTemplate::parse("{message} {percent}%");
-        let result = format_text(&tmpl, "Test", "Hello", None);
-        assert_eq!(result, "Hello");
-    }
-
-    #[test]
-    fn test_format_text_no_percent_placeholder() {
-        let tmpl = FormatTemplate::parse("{message}");
-        let result = format_text(&tmpl, "X", "Hello", Some(50.0));
-        assert_eq!(result, "Hello");
-    }
 
     #[test]
     fn test_draw_state_reset() {

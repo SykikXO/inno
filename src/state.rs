@@ -5,7 +5,8 @@ use std::sync::{Arc, RwLock};
 use crate::battery::aggregate_battery_state;
 use crate::config::{AppConfig, HIDE_TIMEOUT_SECS};
 use crate::dbus::NotifyEvent;
-use crate::draw::{DrawState, format_text};
+use crate::config::format_text;
+use crate::draw::DrawState;
 use crate::layer::LayerApp;
 use crate::sound::SoundWorker;
 
@@ -204,7 +205,7 @@ impl NotificationState {
     ) -> std::time::Duration {
         let dynamic_msg = sig.message.replace("{message}", &notify_event.message);
         let text = format_text(
-            &config.format_template,
+            &config.format,
             &sig.icon,
             &dynamic_msg,
             Some(pct_for_match),
@@ -272,7 +273,7 @@ impl NotificationState {
         // Show the real battery level when one is known. A hardcoded placeholder
         // renders as a plausible reading, which is worse than showing nothing:
         // it looks like the daemon is reporting the wrong number.
-        let text = format_text(&config.format_template, &sig.icon, &sig.message, percentage);
+        let text = format_text(&config.format, &sig.icon, &sig.message, percentage);
 
         self.draw_state.reset();
         self.current_signal_idx = Some(sig_idx);

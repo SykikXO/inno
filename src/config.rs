@@ -224,113 +224,26 @@ impl Anchor {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-enum FormatSegment {
-    Literal(String),
-    Icon,
-    Message,
-    Percent,
-    PercentWithSuffix,
-}
-
-#[derive(Debug, Clone)]
-pub struct FormatTemplate {
-    segments: Vec<FormatSegment>,
-}
-
-impl FormatTemplate {
-    pub fn parse(s: &str) -> Self {
-        let mut segments = Vec::new();
-        let mut chars = s.chars().peekable();
-        let mut literal = String::new();
-
-        while let Some(c) = chars.next() {
-            if c == '{' {
-                let mut placeholder = String::new();
-                let mut found_close = false;
-                while let Some(&nc) = chars.peek() {
-                    chars.next();
-                    if nc == '}' {
-                        found_close = true;
-                        break;
-                    }
-                    placeholder.push(nc);
-                }
-                if found_close {
-                    if !literal.is_empty() {
-                        segments.push(FormatSegment::Literal(std::mem::take(&mut literal)));
-                    }
-                    match placeholder.as_str() {
-                        "icon" => segments.push(FormatSegment::Icon),
-                        "message" => segments.push(FormatSegment::Message),
-                        "percent" => {
-                            if chars.peek() == Some(&'%') {
-                                chars.next();
-                                segments.push(FormatSegment::PercentWithSuffix);
-                            } else {
-                                segments.push(FormatSegment::Percent);
-                            }
-                        }
-                        _ => {
-                            segments.push(FormatSegment::Literal(format!("{{{placeholder}}}")));
-                        }
-                    }
-                } else {
-                    literal.push('{');
-                    literal.push_str(&placeholder);
-                }
-            } else {
-                literal.push(c);
-            }
-        }
-        if !literal.is_empty() {
-            segments.push(FormatSegment::Literal(literal));
-        }
-        Self { segments }
+/// Renders a notification's `format` string.
+///
+/// `{percent}%` is substituted before `{percent}` so the suffixed form wins.
+/// A missing percent renders as nothing, not as a bare `%`, and the leftover
+/// space is trimmed, so `{message} {percent}%` degrades to `{message}` rather
+/// than `{message} %`.
+pub fn format_text(fmt: &str, icon: &str, message: &str, percent: Option<f64>) -> String {
+    let (pct, pct_suffixed) = match percent {
+        Some(p) => (format!("{p:.0}"), format!("{p:.0}%")),
+        None => (String::new(), String::new()),
+    };
+    let mut out = fmt
+        .replace("{percent}%", &pct_suffixed)
+        .replace("{percent}", &pct)
+        .replace("{icon}", icon)
+        .replace("{message}", message);
+    while out.ends_with(' ') {
+        out.pop();
     }
-
-    pub fn render(&self, icon: &str, message: &str, percent: Option<f64>) -> String {
-        let mut capacity = 0;
-        let pct_str = percent.map(|p| format!("{:.0}", p));
-        for seg in &self.segments {
-            capacity += match seg {
-                FormatSegment::Literal(s) => s.len(),
-                FormatSegment::Icon => icon.len(),
-                FormatSegment::Message => message.len(),
-                FormatSegment::Percent => pct_str.as_ref().map_or(0, |s| s.len()),
-                FormatSegment::PercentWithSuffix => pct_str.as_ref().map_or(0, |s| s.len() + 1),
-            };
-        }
-        let mut result = String::with_capacity(capacity);
-        for seg in &self.segments {
-            match seg {
-                FormatSegment::Literal(s) => result.push_str(s),
-                FormatSegment::Icon => result.push_str(icon),
-                FormatSegment::Message => result.push_str(message),
-                FormatSegment::Percent => {
-                    if let Some(ref p) = pct_str {
-                        result.push_str(p);
-                    }
-                }
-                FormatSegment::PercentWithSuffix => {
-                    if let Some(ref p) = pct_str {
-                        result.push_str(p);
-                        result.push('%');
-                    }
-                }
-            }
-        }
-        while result.ends_with(' ') {
-            result.pop();
-        }
-        result
-    }
-}
-
-impl Default for FormatTemplate {
-    fn default() -> Self {
-        Self::parse("{message} {percent}%")
-    }
+    out
 }
 
 #[derive(Debug, Clone)]
@@ -362,7 +275,6 @@ pub struct AppConfig {
     pub border_radius: f64,
     pub gradient: bool,
     pub format: String,
-    pub format_template: FormatTemplate,
     pub output: OutputMode,
     pub battery_mode: BatteryMode,
     pub fps: u64,
@@ -387,7 +299,6 @@ impl Default for AppConfig {
             gradient: false,
             format: "{message} {percent}%".to_string(),
             sound: true,
-            format_template: FormatTemplate::default(),
             output: OutputMode::Primary,
             battery_mode: BatteryMode::First,
             fps: 30,
@@ -533,7 +444,6 @@ impl AppConfig {
             }
             if let Some(fmt) = general.format {
                 self.format = fmt;
-                self.format_template = FormatTemplate::parse(&self.format);
             }
             if let Some(out) = general.output {
                 self.output = parse_output_mode(&out);
@@ -1215,39 +1125,37 @@ mod tests {
     }
 
     #[test]
-    fn test_format_template_parse_and_render() {
-        let tmpl = FormatTemplate::parse("{icon} {message} {percent}%");
-        assert_eq!(tmpl.render("BAT", "Battery", Some(75.0)), "BAT Battery 75%");
+    fn test_format_text_parse_and_render() {
+        assert_eq!(
+            format_text("{icon} {message} {percent}%", "BAT", "Battery", Some(75.0)),
+            "BAT Battery 75%"
+        );
     }
 
     #[test]
-    fn test_format_template_no_percent() {
-        let tmpl = FormatTemplate::parse("{icon} {message} {percent}%");
-        assert_eq!(tmpl.render("NET", "Connected", None), "NET Connected");
+    fn test_format_text_no_percent() {
+        assert_eq!(format_text("{icon} {message} {percent}%", "NET", "Connected", None), "NET Connected");
     }
 
     #[test]
-    fn test_format_template_percent_only() {
-        let tmpl = FormatTemplate::parse("{message} {percent}%");
-        assert_eq!(tmpl.render("", "Hello", None), "Hello");
+    fn test_format_text_percent_only() {
+        assert_eq!(format_text("{message} {percent}%", "", "Hello", None), "Hello");
     }
 
     #[test]
-    fn test_format_template_no_placeholders() {
-        let tmpl = FormatTemplate::parse("static text");
-        assert_eq!(tmpl.render("X", "Y", Some(1.0)), "static text");
+    fn test_format_text_no_placeholders() {
+        assert_eq!(format_text("static text", "X", "Y", Some(1.0)), "static text");
     }
 
     #[test]
-    fn test_format_template_unknown_placeholder() {
-        let tmpl = FormatTemplate::parse("{foo} bar");
-        assert_eq!(tmpl.render("", "", None), "{foo} bar");
+    fn test_format_text_unknown_placeholder() {
+        assert_eq!(format_text("{foo} bar", "", "", None), "{foo} bar");
     }
 
     #[test]
-    fn test_format_template_default() {
-        let tmpl = FormatTemplate::default();
-        assert_eq!(tmpl.render("", "Test", Some(42.0)), "Test 42%");
+    fn test_format_text_default() {
+        let cfg = AppConfig::default();
+        assert_eq!(format_text(&cfg.format, "", "Test", Some(42.0)), "Test 42%");
     }
 
     #[test]
@@ -1387,28 +1295,29 @@ mod tests {
     }
 
     #[test]
-    fn test_format_template_unclosed_brace() {
-        let tmpl = FormatTemplate::parse("hello {world");
-        // Unclosed brace should be treated as literal
-        assert_eq!(tmpl.render("", "", None), "hello {world");
+    fn test_format_text_unclosed_brace() {
+        // Unclosed brace is literal text, not a broken placeholder.
+        assert_eq!(format_text("hello {world", "", "", None), "hello {world");
     }
 
     #[test]
-    fn test_format_template_empty_string() {
-        let tmpl = FormatTemplate::parse("");
-        assert_eq!(tmpl.render("icon", "msg", Some(50.0)), "");
+    fn test_format_text_empty_string() {
+        assert_eq!(format_text("", "icon", "msg", Some(50.0)), "");
     }
 
     #[test]
-    fn test_format_template_consecutive_placeholders() {
-        let tmpl = FormatTemplate::parse("{icon}{message}");
-        assert_eq!(tmpl.render("A", "B", None), "AB");
+    fn test_format_text_consecutive_placeholders() {
+        assert_eq!(format_text("{icon}{message}", "A", "B", None), "AB");
     }
 
     #[test]
-    fn test_format_template_percent_zero() {
-        let tmpl = FormatTemplate::parse("{percent}%");
-        assert_eq!(tmpl.render("", "", Some(0.0)), "0%");
+    fn test_format_text_percent_zero() {
+        assert_eq!(format_text("{percent}%", "", "", Some(0.0)), "0%");
+    }
+
+    #[test]
+    fn test_format_text_percent_only_no_suffix() {
+        assert_eq!(format_text("{message}", "X", "Hello", Some(50.0)), "Hello");
     }
 
     #[test]
