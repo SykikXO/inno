@@ -29,7 +29,6 @@ use layer::{FrameTick, LayerApp};
 use sound::SoundWorker;
 use state::NotificationState;
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Opt-in frame-by-frame tracing, used to verify playback rate and transitions
 /// from a log rather than from pixels. Off unless INNO_TRACE is set, because it
@@ -157,14 +156,6 @@ async fn main() -> anyhow::Result<()> {
     } = args::parse();
 
     match action {
-        Action::Help => {
-            print!("{}", args::help_text());
-            return Ok(());
-        }
-        Action::Version => {
-            println!("inno {}", VERSION);
-            return Ok(());
-        }
         Action::Daemon => {
             println!("inno is running as a daemon. To stop it, use 'pkill inno'.");
             use std::os::unix::process::CommandExt;
