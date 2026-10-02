@@ -192,6 +192,48 @@ impl NotificationState {
         None
     }
 
+    /// Renders `sig` with `text` and reports how long the notification should
+    /// stay up. The event path and `--test-signal` share it so both animate,
+    /// buffer and hide identically.
+    fn show(
+        &mut self,
+        app: &mut LayerApp,
+        config: &AppConfig,
+        sig: &crate::config::Signal,
+        sig_idx: Option<usize>,
+        text: &str,
+    ) -> std::time::Duration {
+        self.draw_state.reset();
+        self.current_signal_idx = sig_idx;
+        self.current_anim_ref = sig.animation_ref.clone();
+        self.current_text = Some(text.to_string());
+
+        // A frame animation wraps the procedural one, so a signal may name
+        // both: `animation` supplies the transition, `animation_ref` the
+        // content. Naming an [animations] key in `animation` is shorthand for
+        // both fields pointing at that key.
+        if let Some(anim_key) = sig.animation_ref.as_deref() {
+            match config.animations.get(anim_key) {
+                Some(asset) if app.ensure_animation_loaded(anim_key, asset, config) => {
+                    app.reset_animation(anim_key);
+                    self.animating = true;
+                    app.draw_frame_anim(anim_key, config, Some(sig), text, &self.draw_state, false);
+                    return notification_duration(sig, config);
+                }
+                Some(_) => eprintln!("Animation '{}' failed to load", anim_key),
+                None => eprintln!("Animation '{}' not found in config", anim_key),
+            }
+        }
+
+        // Fall through to procedural animation
+        app.draw_text_with_signal(text, config, Some(sig), &self.draw_state);
+        self.animating = sig.animation != crate::config::Animation::None;
+        // Buffer after animation completes before hiding the surface.
+        // Must be generous: the animation timer isn't reset on notification show,
+        // and accumulated timer jitter over many frames can delay completion.
+        notification_duration(sig, config)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn show_notification(
         &mut self,
@@ -204,57 +246,13 @@ impl NotificationState {
         pct_for_match: f64,
     ) -> std::time::Duration {
         let dynamic_msg = sig.message.replace("{message}", &notify_event.message);
-        let text = format_text(
-            &config.format,
-            &sig.icon,
-            &dynamic_msg,
-            Some(pct_for_match),
-        );
+        let text = format_text(&config.format, &sig.icon, &dynamic_msg, Some(pct_for_match));
 
         if let Some(ref sound_path) = sig.sound {
             sound_worker.play(sound_path);
         }
 
-        self.draw_state.reset();
-        self.current_signal_idx = sig_idx;
-        self.current_anim_ref = sig.animation_ref.clone();
-        self.current_text = Some(text.clone());
-
-        // A frame animation wraps the procedural one, so a signal may name
-        // both: `animation` supplies the transition, `animation_ref` the
-        // content. Naming an [animations] key in `animation` is shorthand for
-        // both fields pointing at that key.
-        if let Some(ref anim_key) = sig.animation_ref {
-            match config.animations.get(anim_key) {
-                Some(asset) if app.ensure_animation_loaded(anim_key, asset, config) => {
-                    app.reset_animation(anim_key);
-                    self.animating = true;
-                    app.draw_frame_anim(
-                        anim_key,
-                        config,
-                        Some(sig),
-                        &text,
-                        &self.draw_state,
-                        false,
-                    );
-                    return notification_duration(sig, config);
-                }
-                Some(_) => {
-                    eprintln!("Animation '{}' failed to load", anim_key);
-                }
-                None => {
-                    eprintln!("Animation '{}' not found in config", anim_key);
-                }
-            }
-        }
-
-        // Fall through to procedural animation
-        app.draw_text_with_signal(&text, config, Some(sig), &self.draw_state);
-        self.animating = sig.animation != crate::config::Animation::None;
-        // Buffer after animation completes before hiding the surface.
-        // Must be generous: the animation timer isn't reset on notification show,
-        // and accumulated timer jitter over many frames can delay completion.
-        notification_duration(sig, config)
+        self.show(app, config, sig, sig_idx, &text)
     }
 
     /// Renders a configured signal on demand, as if its event had arrived.
@@ -274,35 +272,7 @@ impl NotificationState {
         // renders as a plausible reading, which is worse than showing nothing:
         // it looks like the daemon is reporting the wrong number.
         let text = format_text(&config.format, &sig.icon, &sig.message, percentage);
-
-        self.draw_state.reset();
-        self.current_signal_idx = Some(sig_idx);
-        self.current_text = Some(text.clone());
-        self.current_anim_ref = sig.animation_ref.clone();
-
-        if let Some(anim_key) = sig.animation_ref.as_deref() {
-            match config.animations.get(anim_key) {
-                Some(asset) if app.ensure_animation_loaded(anim_key, asset, config) => {
-                    app.reset_animation(anim_key);
-                    self.animating = true;
-                    app.draw_frame_anim(
-                        anim_key,
-                        config,
-                        Some(sig),
-                        &text,
-                        &self.draw_state,
-                        false,
-                    );
-                    return notification_duration(sig, config);
-                }
-                Some(_) => eprintln!("Animation '{}' failed to load", anim_key),
-                None => eprintln!("Animation '{}' not found in config", anim_key),
-            }
-        }
-
-        app.draw_text_with_signal(&text, config, Some(sig), &self.draw_state);
-        self.animating = sig.animation != crate::config::Animation::None;
-        notification_duration(sig, config)
+        self.show(app, config, sig, Some(sig_idx), &text)
     }
 
     pub fn hide_and_next(&mut self, app: &mut LayerApp) -> std::time::Duration {
@@ -367,14 +337,6 @@ impl NotificationState {
         }
     }
 
-    pub fn on_hide_control(&mut self, app: &mut LayerApp) {
-        app.hide();
-        self.current_text = None;
-        self.current_anim_ref = None;
-        self.animating = false;
-        self.draw_state.reset();
-    }
-
     pub fn on_show_control(
         &mut self,
         app: &mut LayerApp,
@@ -385,6 +347,11 @@ impl NotificationState {
         app.draw_text(message, config);
         self.current_text = Some(message.to_string());
         self.animating = false;
+        // This notification belongs to no signal. Leaving the previous index in
+        // place made the caller read it as "an indefinite signal is showing" and
+        // re-arm the hide timer to HIDE_TIMEOUT_SECS instead of what was asked.
+        self.current_signal_idx = None;
+        self.current_anim_ref = None;
     }
 }
 

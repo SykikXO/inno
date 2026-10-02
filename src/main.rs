@@ -419,12 +419,7 @@ async fn main() -> anyhow::Result<()> {
 
             if let Some(ref text) = state.current_text {
                 state.draw_state.reset();
-                if state.current_signal_idx.is_some_and(|idx| idx >= config.signals.len()) {
-                    eprintln!("Stale signal index, clearing");
-                    state.current_signal_idx = None;
-                    state.animating = false;
-                    app.hide();
-                } else if let Some(signal) =
+                if let Some(signal) =
                     active_signal(&state, &config, current_test_signal.as_ref())
                 {
                     // A frame animation and the procedural transition are
@@ -480,7 +475,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                     ControlEvent::Hide => {
                         eprintln!("DBus: Hide");
-                        state.on_hide_control(&mut app);
+                        state.hide_and_next(&mut app);
                         hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
                     }
                     ControlEvent::Reload => {
@@ -611,17 +606,6 @@ async fn main() -> anyhow::Result<()> {
                 let Some(text) = &state.current_text else {
                     continue;
                 };
-
-                if state.current_signal_idx.is_some_and(|idx| idx >= config.signals.len())
-                    && !test_frame_anim_name.is_some()
-                    && !test_signal_name.is_some()
-                {
-                    eprintln!("Stale signal index, clearing");
-                    state.current_signal_idx = None;
-                    state.animating = false;
-                    app.hide();
-                    continue;
-                }
 
                 // Only the test modes carry a synthetic signal; a real
                 // notification resolves through the matched signal index.
