@@ -46,6 +46,41 @@ struct RenderKey {
     scale: f64,
 }
 
+/// Sets all four margins from the anchor, scaled. Offsets move the surface
+/// without changing how far the compositor keeps it from the anchored edge.
+fn set_margins(layer: &LayerSurface, config: &AppConfig, s: f64) {
+    let (mv, mh, oy, ox) = (
+        config.anchor.margin_v,
+        config.anchor.margin_h,
+        config.anchor.offset_y,
+        config.anchor.offset_x,
+    );
+    layer.set_margin(
+        ((mv + oy) as f64 * s) as i32,
+        ((mh + ox) as f64 * s) as i32,
+        ((mv - oy) as f64 * s) as i32,
+        ((mh - ox) as f64 * s) as i32,
+    );
+}
+
+fn render_key(text: &str, config: &AppConfig, signal: Option<&Signal>, scale: f64) -> RenderKey {
+    RenderKey {
+        text: text.to_string(),
+        signal_icon: signal.map(|s| s.icon.clone()).unwrap_or_default(),
+        signal_icon_size: signal.map(|s| s.icon_size).unwrap_or(0.0),
+        signal_color: signal.map(|s| s.color).unwrap_or(config.text_color),
+        font: config.font.clone(),
+        font_size: config.font_size,
+        font_slant: config.font_slant,
+        font_weight: config.font_weight,
+        bg_color: config.bg_color,
+        text_color: config.text_color,
+        border_radius: config.border_radius,
+        gradient: config.gradient,
+        scale,
+    }
+}
+
 /// Maximum logical pixels for the animation display area in text+anim mode.
 const MAX_ANIM_DISPLAY_PX: f64 = 200.0;
 
@@ -224,12 +259,7 @@ impl LayerApp {
 
         layer.set_anchor(anchor);
         let s = self.effective_scale(config);
-        layer.set_margin(
-            ((config.anchor.margin_v + config.anchor.offset_y) as f64 * s) as i32,
-            ((config.anchor.margin_h + config.anchor.offset_x) as f64 * s) as i32,
-            ((config.anchor.margin_v - config.anchor.offset_y) as f64 * s) as i32,
-            ((config.anchor.margin_h - config.anchor.offset_x) as f64 * s) as i32,
-        );
+        set_margins(&layer, config, s);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         layer.set_size(1, 1);
         layer.commit();
@@ -244,17 +274,12 @@ impl LayerApp {
     pub fn update_scale_margins(&mut self, config: &AppConfig) {
         if let Some(layer) = &self.layer_surface {
             let s = self.effective_scale(config);
-            layer.set_margin(
-                ((config.anchor.margin_v + config.anchor.offset_y) as f64 * s) as i32,
-                ((config.anchor.margin_h + config.anchor.offset_x) as f64 * s) as i32,
-                ((config.anchor.margin_v - config.anchor.offset_y) as f64 * s) as i32,
-                ((config.anchor.margin_h - config.anchor.offset_x) as f64 * s) as i32,
-            );
+                set_margins(layer, config, s);
             layer.commit();
         }
     }
 
-        /// Loads an animation player by key. A no-op once loaded, and a recorded
+    /// Loads an animation player by key. A no-op once loaded, and a recorded
     /// no-op after a failure so a broken path is not retried every tick.
     pub fn ensure_animation_loaded(
         &mut self,
@@ -350,9 +375,7 @@ impl LayerApp {
             .create_buffer(w, h, stride, wl_shm::Format::Argb8888)
             .ok()?;
 
-        for b in canvas.iter_mut() {
-            *b = 0;
-        }
+        canvas.fill(0);
         // SAFETY: canvas is the exclusive mutable slice from SlotPool::create_buffer.
         // The raw pointer carries no lifetime, and NLL ends the borrow here, so
         // no aliased mutable reference exists when the Cairo surface wraps it.
@@ -390,11 +413,7 @@ impl LayerApp {
         self.height = 1;
 
         if let Some((buffer, _, _)) = self.allocate_buffer(1, 1) {
-            let Some(layer) = self.layer_surface.as_ref() else { return };
-            layer.set_size(1, 1);
-            layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
-            layer.wl_surface().damage(0, 0, 1, 1);
-            layer.commit();
+            self.commit_buffer(&buffer);
         }
     }
 
@@ -469,33 +488,35 @@ impl LayerApp {
 
         let scale = self.effective_scale(config);
 
-        let key = RenderKey {
-            text: text.to_string(),
-            signal_icon: signal.map(|s| s.icon.clone()).unwrap_or_default(),
-            signal_icon_size: signal.map(|s| s.icon_size).unwrap_or(0.0),
-            signal_color: signal.map(|s| s.color).unwrap_or(config.text_color),
-            font: config.font.clone(),
-            font_size: config.font_size,
-            font_slant: config.font_slant,
-            font_weight: config.font_weight,
-            bg_color: config.bg_color,
-            text_color: config.text_color,
-            border_radius: config.border_radius,
-            gradient: config.gradient,
-            scale,
-        };
-
-        if !self.frame_cache.matches(&key) {
-            let (w, h) = draw::measure_text(text, config, signal, scale);
-            if w <= 1 || h <= 1 {
-                self.frame_cache.clear();
-                self.commit_transparent();
-                return;
-            }
-            self.render_and_cache(text, config, signal, scale, key, w, h);
+        if !self.ensure_cached(text, config, signal, scale) {
+            return;
         }
 
         self.blit_cached(scale, draw_state);
+    }
+
+    /// Renders `text` into the frame cache unless it is already there. Returns
+    /// false when there is nothing to show, having committed a transparent
+    /// surface.
+    fn ensure_cached(
+        &mut self,
+        text: &str,
+        config: &AppConfig,
+        signal: Option<&Signal>,
+        scale: f64,
+    ) -> bool {
+        let key = render_key(text, config, signal, scale);
+        if self.frame_cache.matches(&key) {
+            return true;
+        }
+        let (w, h) = draw::measure_text(text, config, signal, scale);
+        if w <= 1 || h <= 1 {
+            self.frame_cache.clear();
+            self.commit_transparent();
+            return false;
+        }
+        self.render_and_cache(text, config, signal, scale, key, w, h);
+        true
     }
 
     /// Draw notification with animation frame on top, text below (vertical layout).
@@ -515,31 +536,9 @@ impl LayerApp {
 
         let scale = self.effective_scale(config);
 
-        let key = RenderKey {
-            text: text.to_string(),
-            signal_icon: signal.map(|s| s.icon.clone()).unwrap_or_default(),
-            signal_icon_size: signal.map(|s| s.icon_size).unwrap_or(0.0),
-            signal_color: signal.map(|s| s.color).unwrap_or(config.text_color),
-            font: config.font.clone(),
-            font_size: config.font_size,
-            font_slant: config.font_slant,
-            font_weight: config.font_weight,
-            bg_color: config.bg_color,
-            text_color: config.text_color,
-            border_radius: config.border_radius,
-            gradient: config.gradient,
-            scale,
-        };
-
         // Ensure text cache exists (rendered once)
-        if !self.frame_cache.matches(&key) {
-            let (tw, th) = draw::measure_text(text, config, signal, scale);
-            if tw <= 1 || th <= 1 {
-                self.frame_cache.clear();
-                self.commit_transparent();
-                return;
-            }
-            self.render_and_cache(text, config, signal, scale, key, tw, th);
+        if !self.ensure_cached(text, config, signal, scale) {
+            return;
         }
 
         // Clone the refcounted surface to avoid holding an immutable borrow
@@ -680,9 +679,6 @@ impl LayerApp {
         self.draw_text_with_signal(text, config, None, &draw_state);
     }
 
-    /// Tick a frame animation forward and draw it according to its display mode.
-    /// Returns the per-frame sleep duration on success, or `None` if the
-    /// animation doesn't exist or couldn't be loaded.
     /// Advances a frame animation one step and draws it per its display mode.
     /// With `advance = false` the current frame is redrawn without ticking.
     pub fn draw_frame_anim(
