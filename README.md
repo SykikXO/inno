@@ -11,7 +11,10 @@ Inno is a lightweight, event-driven notification agent for Wayland, written in R
 
 - **Wayland native** — Uses wlr-layer-shell for overlay notifications
 - **Configurable DBus events** — Listen for any DBus signal, not just battery
-- **7 animation types** — None, fade, pulse, blink, slide-left, slide-right, bounce
+- **7 procedural animations** — none, fade, pulse, blink, slide-left, slide-right, bounce
+- **Frame animations** — play a directory of PNG frames, decoded lazily and at display size
+- **Composable** — a procedural transition can wrap a frame animation
+- **Sound with fallback** — probes pw-play, paplay, ffplay, mpv at startup
 - **Sound support** — Play audio on notification via paplay (PipeWire/PulseAudio)
 - **Hot-reload config** — Edit `inno.toml` and changes apply instantly
 - **Click to dismiss** — Click any notification to close it
@@ -158,6 +161,47 @@ Examples:
 | `slideright` | Slide in from right, ease out |
 | `bounce` | Parabolic bounce with decay |
 
+### Frame animations
+
+An `[animations]` entry plays a directory of PNG frames. Frames are decoded on
+demand and straight to display size, so a 216-frame 640x640 set costs about
+0.6 MB resident instead of 337 MB, and loading does not stall the event loop.
+
+```toml
+[animations]
+cube_charge = { source = "assets/animations/cube_charging", fps = 30, loop = true, display = "text" }
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `source` | required | Directory of PNG frames. Relative paths resolve against the config file |
+| `fps` | `general.fps` | Playback rate. The frame clock follows this, not `general.fps` |
+| `loop` | `true` | Restart at the end instead of finishing |
+| `display` | `anim` | `anim` shows the animation alone, `text` puts it above the text |
+| `on_complete` | `hold` | `hold` leaves the last frame up, `hide` takes the notification down, `loop` restarts |
+
+Frames are ordered naturally, so `frame_9.png` plays before `frame_10.png`.
+An `animation` that names an `[animations]` entry is shorthand for setting
+`animation_ref` to it with no transition.
+
+### Composing transitions with content
+
+`animation` is the transition and `animation_ref` is the content, and a signal
+may set both:
+
+```toml
+animation = "fade"            # fades in and out
+animation_ref = "cube_charge"  # content is the cube
+```
+
+### Durations
+
+`duration` is optional. Omitted on a signal with a frame animation, the
+notification lasts exactly as long as the animation does, derived from the
+frame count and rate, so there is nothing to keep in sync by hand. Omitted
+with no animation it falls back to 5 seconds. An explicit value always wins,
+and `duration = 0` means until dismissed.
+
 ### Sounds
 
 Sound files are bundled in `assets/sounds/` (Windows 7 scheme). To use them locally:
@@ -173,7 +217,20 @@ Then reference them in your config with paths relative to the config file:
 sound = "assets/sounds/hardware_insert.wav"
 ```
 
-Absolute paths also work. Requires `paplay` (from `pipewire` or `pulseaudio`).
+Absolute paths also work, so you can point at your own recordings.
+
+The bundled files are 16-bit PCM, which every decoder accepts. At startup the
+daemon probes `pw-play`, then `paplay`, then `ffplay`, then `mpv`, playing a
+silent sample to check the player, the sound server, and the audio device all
+work, and caches whichever succeeds. If none do it warns once and carries on
+with notifications silent, since a daemon that will not start over a cosmetic
+sound is worse than a quiet one.
+
+`aplay` is deliberately not in the chain: it validates WAV headers strictly and
+without a PulseAudio plugin it would bypass the sound server and drive the card
+directly.
+
+Turn sound off entirely with `--no-sound` or `sound = false` in `[general]`.
 
 ## Custom DBus Events
 

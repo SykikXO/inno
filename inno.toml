@@ -1,8 +1,20 @@
 # Inno Battery Notification Configuration
 
+# Frame animations. Frames are decoded lazily and at display size, so a long
+# sequence costs almost nothing until it plays.
+#   source      directory of PNG frames, relative to this file
+#   fps         playback rate; the frame clock follows this, not general.fps
+#   loop        restart at the end instead of finishing
+#   display     "anim" shows the animation alone, "text" puts it above the text
+#   on_complete what a non-looping animation does at its last frame:
+#               "hold" (default) leaves the frame up, "hide" dismisses,
+#               "loop" restarts regardless of loop
 [animations]
 cube_charge = { source = "assets/animations/cube_charging", fps = 30, loop = true, display = "text" }
 ripple = { source = "assets/animations/ripple_charge", fps = 30, loop = true, display = "text" }
+# A one-shot animation: plays through and then hides, rather than holding its
+# last frame. Change display to "anim" to show the animation with no text.
+once = { source = "assets/animations/ripple_charge", fps = 30, loop = false, display = "text", on_complete = "hide" }
 
 [general]
 font = "InputMono Nerd Font"
@@ -12,6 +24,7 @@ font_weight = "normal"   # normal, bold
 position = "center,center,0,0,0,0"
 format = "{message} {percent}%"
 fps = 60
+# sound = false        # same as --no-sound
 
 [appearance]
 text_color = [1.0, 1.0, 1.0, 1.0]
@@ -53,9 +66,11 @@ icon_size = 28
 color = "green"
 threshold = 0
 state = "charging"
-animation = "none"
+# animation is the transition, animation_ref is the content, and they compose.
+# duration is omitted here, so the notification lasts exactly as long as the
+# cube does.
+animation = "fade"
 animation_ref = "cube_charge"
-duration = 10
 sound = "assets/sounds/hardware_insert.wav"
 
 [[signal]]
@@ -87,8 +102,10 @@ icon_size = 28
 color = "yellow"
 threshold = 80
 state = "charging"
-animation = "bounce"
-duration = 30
+# Non-looping: plays through, then hides when the last frame lands. No
+# duration, so it lasts exactly as long as the animation does.
+animation = "pulse"
+animation_ref = "once"
 sound = "assets/sounds/notify.wav"
 
 [[signal]]
