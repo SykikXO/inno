@@ -4,7 +4,7 @@ After=graphical-session.target pipewire.service pipewire-pulse.service
 Wants=graphical-session.target
 
 [Service]
-ExecStart=/usr/bin/inno --no-dbus
+ExecStart=/usr/bin/inno
 Restart=on-failure
 RestartSec=3
 
