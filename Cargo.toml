@@ -6,7 +6,6 @@ edition = "2024"
 [dependencies]
 smithay-client-toolkit = "0.20"
 wayland-client = "0.31"
-wayland-backend = "0.3"
 cairo-rs = { version = "0.21", features = ["png"] }
 zbus = { version = "5.1", features = ["tokio"] }
 tokio = { version = "1.49", features = ["full", "io-util", "fs"] }
@@ -16,6 +15,5 @@ dirs = "5.0"
 anyhow = "1.0"
 futures = "0.3"
 libc = "0.2"
-thiserror = "1.0"
 notify = "6.0"
 clap = { version = "4.6.7", features = ["derive"] }

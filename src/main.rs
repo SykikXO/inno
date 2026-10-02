@@ -145,7 +145,6 @@ fn set_frame_clock(clock: &mut tokio::time::Interval, period: Duration) {
 async fn main() -> anyhow::Result<()> {
     let Args {
         action,
-        debug_mode,
         enable_dbus,
         log_file,
         test_animation,
@@ -218,10 +217,6 @@ async fn main() -> anyhow::Result<()> {
         Action::InternalDaemon => {}
     }
 
-    if debug_mode {
-        println!("inno is running in debug mode.");
-    }
-
     let mut config = match load_config() {
         Some(cfg) => cfg,
         None => {
@@ -286,6 +281,14 @@ async fn main() -> anyhow::Result<()> {
             // which emits Create/Rename rather than Modify. Watching the parent
             // directory and filtering by name catches both, and keeps working
             // after the original inode is replaced.
+            //
+            // Resolved first, because a symlinked config otherwise watches the
+            // link's directory for the link's name, and every write that goes
+            // through the link lands on the target's directory under a different
+            // name. That combination never fires. Asset paths still resolve
+            // against the link's own directory, which is what a user copying a
+            // config directory expects.
+            let config_path = config_path.canonicalize().unwrap_or(config_path);
             let file_name = config_path.file_name().map(|n| n.to_os_string());
             let watch_dir = config_path
                 .parent()

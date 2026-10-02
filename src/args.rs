@@ -9,7 +9,6 @@ pub enum Action {
 
 pub struct Args {
     pub action: Action,
-    pub debug_mode: bool,
     pub enable_dbus: bool,
     pub log_file: Option<PathBuf>,
     pub test_animation: Option<usize>,
@@ -48,10 +47,6 @@ struct Cli {
 
     #[arg(short = 'v', long, action = clap::ArgAction::Version)]
     version: Option<bool>,
-
-    /// Run in debug mode (spitting logs to terminal)
-    #[arg(short, long = "debug")]
-    debug_mode: bool,
 
     /// Run in background (daemon mode)
     #[arg(long)]
@@ -120,12 +115,6 @@ impl From<Cli> for Args {
             cli.test_animations || test_animation.is_some()
         };
 
-        let debug_mode = cli.debug_mode
-            || test_animation.is_some()
-            || test_frame_anim.is_some()
-            || test_signal.is_some()
-            || cli.test_animations;
-
         Args {
             // Resolved so precedence does not depend on argument order.
             // --internal-daemon beats --daemon so re-spawning cannot fork-bomb.
@@ -136,7 +125,6 @@ impl From<Cli> for Args {
             } else {
                 Action::Daemon
             },
-            debug_mode,
             enable_dbus: !cli.no_dbus,
             log_file: cli.log_file,
             test_animation,
@@ -171,7 +159,6 @@ mod tests {
     fn test_no_args_defaults_to_internal_daemon() {
         let args = parse_from(argv(&[]));
         assert!(is_internal(&args.action));
-        assert!(!args.debug_mode);
         assert!(args.enable_dbus);
         assert!(args.log_file.is_none());
         assert!(args.test_animation.is_none());
@@ -209,14 +196,12 @@ mod tests {
         let parsed = parse_from(argv(&["--test-frame", "ripple", "--no-dbus"]));
         assert_eq!(parsed.test_frame_anim.as_deref(), Some("ripple"));
         assert!(!parsed.enable_dbus);
-        assert!(parsed.debug_mode);
     }
 
     #[test]
-    fn test_test_frame_sets_name_and_debug_mode() {
+    fn test_test_frame_sets_the_preview_name() {
         let parsed = parse_from(argv(&["--test-frame", "cube_charge"]));
         assert_eq!(parsed.test_frame_anim.as_deref(), Some("cube_charge"));
-        assert!(parsed.debug_mode);
         assert!(!parsed.test_all_animations);
         assert!(is_internal(&parsed.action));
     }
@@ -261,7 +246,6 @@ mod tests {
     fn test_test_signal_selects_by_message_and_excludes_other_modes() {
         let parsed = parse_from(argv(&["--test-signal", "Charging"]));
         assert_eq!(parsed.test_signal.as_deref(), Some("Charging"));
-        assert!(parsed.debug_mode);
         assert!(!parsed.test_all_animations);
         assert_eq!(parsed.test_frame_anim, None, "must not also run a frame preview");
     }

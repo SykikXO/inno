@@ -771,10 +771,8 @@ dependencies = [
  "notify",
  "serde",
  "smithay-client-toolkit",
- "thiserror 1.0.69",
  "tokio",
  "toml 0.8.23",
- "wayland-backend",
  "wayland-client",
  "zbus",
 ]

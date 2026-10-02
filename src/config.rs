@@ -2,21 +2,12 @@ use cairo::{FontSlant, FontWeight};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use thiserror::Error;
 
 // Constants
 pub const DEFAULT_MARGIN: i32 = 10;
 pub const DEFAULT_FONT_SIZE: f64 = 24.0;
 pub const DEFAULT_ICON_SIZE: f64 = 24.0;
 pub const HIDE_TIMEOUT_SECS: u64 = 86400;
-
-#[derive(Debug, Error)]
-pub enum ConfigError {
-    #[error("Failed to read config file: {0}")]
-    ReadError(#[from] std::io::Error),
-    #[error("Parse error in config: {0}")]
-    ParseError(#[from] toml::de::Error),
-}
 
 // TOML config file structure
 #[derive(Debug, Deserialize, Default)]
@@ -428,7 +419,7 @@ impl AppConfig {
         config
     }
 
-    fn load_toml(&mut self, path: &PathBuf) -> Result<(), ConfigError> {
+    fn load_toml(&mut self, path: &PathBuf) -> anyhow::Result<()> {
         let content = std::fs::read_to_string(path)?;
         let file: ConfigFile = toml::from_str(&content)?;
 
