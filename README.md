@@ -130,13 +130,18 @@ sound = "assets/sounds/hardware_insert.wav"
 
 ### Config Options
 
+The Default column is what the daemon uses when a key is absent, not what
+`inno.toml` ships. `inno.toml` deliberately differs where the shipped file
+looks better than the bare default: 18pt text, an 8px corner radius, a gradient
+background, and a 90px bottom margin.
+
 | Section | Key | Default | Description |
 |---------|-----|---------|-------------|
 | `[general]` | `font` | monospace | Font family name |
-| | `font_size` | `18.0` | Font size in points |
+| | `font_size` | `24.0` | Font size in points |
 | | `font_slant` | `normal` | `normal`, `italic`, or `oblique` |
 | | `font_weight` | `normal` | `normal` or `bold` |
-| | `position` | `center,bottom,0,10,0,0` | Anchor and margins (see below) |
+| | `position` | `center,bottom,0,0,0,0` | Anchor and margins (see below) |
 | | `format` | `{message} {percent}%` | Text template |
 | | `fps` | `30` | Frame rate for procedural transitions. Frame animations use their own `fps` |
 | | `scale` | `1.0` | Display scale multiplier. Minimum `0.1` |
@@ -145,8 +150,8 @@ sound = "assets/sounds/hardware_insert.wav"
 | | `sound` | `true` | `false` disables all sound, same as `--no-sound` |
 | `[appearance]` | `text_color` | white | RGBA array `[R, G, B, A]`, 0.0–1.0 |
 | | `bg_color` | black at 0.6 | Background RGBA |
-| | `border_radius` | `8.0` | Corner radius in pixels |
-| | `gradient` | `true` | Gradient background |
+| | `border_radius` | `0.0` | Corner radius in pixels |
+| | `gradient` | `false` | Gradient background |
 | `[colors]` | `<name>` | — | Named colour referenced by a signal's `color` |
 | `[animations]` | `source` | required | Directory of PNG frames, relative to the config file |
 | | `fps` | `general.fps` | Playback rate for this animation |
@@ -163,6 +168,12 @@ sound = "assets/sounds/hardware_insert.wav"
 | | `animation_ref` | — | Name of an `[animations]` entry to play as the content |
 | | `duration` | derived | Seconds on screen. `0` stays until dismissed. Omitted derives it from the animation |
 | | `sound` | — | Sound file, relative to the config file |
+
+`{message}` inside a signal's `message` expands to the text the event carried,
+and `general.format` then wraps the result. The two templates have separate
+vocabularies: only `signal.message` substitutes `{message}`, and only
+`general.format` substitutes `{percent}`, `{icon}` and `{percent}%`. A
+`{percent}` written in a signal's `message` is left as literal text.
 
 ### Signal matching
 
@@ -547,7 +558,6 @@ inno [OPTIONS]
 OPTIONS:
     -h, --help              Show help
     -v, --version           Show version
-    -d, --debug             Run in debug mode (logs to terminal)
     --daemon                Run in background, re-executing itself with
                             --internal-daemon
     -l, --log-file <PATH>   Log output to file (use with --daemon)
@@ -576,7 +586,9 @@ drops into a package build or a pre-commit hook.
   layer surface per output.
 - Changing `position` or `output` needs a restart. `margin_*`, `scale`, and
   everything else apply on config reload.
-- `--flag=value` is not accepted. Values must be a separate argument.
+- Only `inno.toml` is watched for changes. A new or edited file under
+  `events/` is picked up on the next start, or after a `Reload` over the
+  control interface.
 - An animation-only notification (`display = "anim"`) is sized from the frame's
   natural dimensions, so on a high-DPI output it renders softer than the text
   card beside it rather than decoding larger and using the memory.
