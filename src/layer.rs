@@ -399,7 +399,7 @@ impl LayerApp {
     }
 
     /// Draw animation-only display (replaces text notification entirely).
-    fn draw_animation_frame(&mut self, frame: &AnimFrame, scale: f64) {
+    fn draw_animation_frame(&mut self, frame: &AnimFrame, scale: f64, draw_state: &DrawState) {
         if self.layer_surface.is_none() || !self.configured {
             return;
         }
@@ -437,8 +437,14 @@ impl LayerApp {
             let dy = (sh - frame.h as f64 * s) / 2.0;
             cr.translate(dx, dy);
             cr.scale(s, s);
+            // Honour the transition, so a fade or slide composes with an
+            // animation-only notification the same way it does with text.
+            cr.translate(
+                draw_state.offset_x * scale,
+                draw_state.offset_y * scale,
+            );
             cr.set_source_surface(&frame.surface, 0.0, 0.0).unwrap();
-            cr.paint().unwrap();
+            cr.paint_with_alpha(draw_state.alpha).unwrap();
             surface.flush();
         }
 
@@ -705,7 +711,9 @@ impl LayerApp {
         };
 
         match asset.display {
-            DisplayMode::Anim => self.draw_animation_frame(&frame, self.effective_scale(config)),
+            DisplayMode::Anim => {
+                self.draw_animation_frame(&frame, self.effective_scale(config), draw_state)
+            }
             DisplayMode::Text => {
                 self.draw_text_with_anim_bg(text, config, signal, draw_state, &frame)
             }
@@ -716,6 +724,12 @@ impl LayerApp {
         } else {
             FrameTick::Continue
         }
+    }
+
+    /// Records an animation that stopped working mid-playback, so it is not
+    /// reloaded and rediscussed on every tick of the next notification.
+    pub fn failed_animations_insert(&mut self, key: &str) {
+        self.failed_animations.insert(key.to_string());
     }
 
     pub fn clear_animations(&mut self) {

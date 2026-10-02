@@ -16,6 +16,7 @@ pub struct Args {
     pub test_animation: Option<usize>,
     pub test_all_animations: bool,
     pub test_frame_anim: Option<String>,
+    pub test_signal: Option<String>,
     pub no_sound: bool,
 }
 
@@ -34,6 +35,7 @@ OPTIONS:
     --test <number>         Preview specific procedural animation (1-6)
     --test-animations       Cycle through all procedural animations
     --test-frame <name>     Preview a frame animation from [animations] config
+    --test-signal <text>    Preview the signal whose message matches <text>
     --check-config          Validate config and exit
     --no-sound              Disable notification sounds
 
@@ -70,6 +72,7 @@ pub fn parse_from<I: IntoIterator<Item = String>>(args: I) -> Args {
     let mut test_animation: Option<usize> = None;
     let mut test_all_animations = false;
     let mut test_frame_anim: Option<String> = None;
+    let mut test_signal: Option<String> = None;
     let mut no_sound = false;
 
     let mut i = 1;
@@ -109,6 +112,15 @@ pub fn parse_from<I: IntoIterator<Item = String>>(args: I) -> Args {
                     i += 1;
                 }
             }
+            "--test-signal" => {
+                if let Some(value) = value_after(&args, i) {
+                    test_signal = Some(value);
+                    debug_mode = true;
+                }
+                if args.get(i + 1).is_some_and(|v| !v.starts_with('-')) {
+                    i += 1;
+                }
+            }
             "--check-config" => check_config = true,
             "--no-sound" => no_sound = true,
             _ => {}
@@ -141,6 +153,10 @@ pub fn parse_from<I: IntoIterator<Item = String>>(args: I) -> Args {
     if test_frame_anim.is_some() {
         test_all_animations = false;
     }
+    if test_signal.is_some() {
+        test_all_animations = false;
+        test_frame_anim = None;
+    }
 
     Args {
         action,
@@ -150,6 +166,7 @@ pub fn parse_from<I: IntoIterator<Item = String>>(args: I) -> Args {
         test_animation,
         test_all_animations,
         test_frame_anim,
+        test_signal,
         no_sound,
     }
 }
@@ -182,6 +199,7 @@ mod tests {
         assert!(args.test_animation.is_none());
         assert!(!args.test_all_animations);
         assert!(args.test_frame_anim.is_none());
+        assert!(args.test_signal.is_none());
         assert!(!args.no_sound);
     }
 
@@ -291,6 +309,34 @@ mod tests {
     }
 
     #[test]
+    fn test_test_signal_selects_by_message_and_excludes_other_modes() {
+        let parsed = parse_from(argv(&["--test-signal", "Charging"]));
+        assert_eq!(parsed.test_signal.as_deref(), Some("Charging"));
+        assert!(parsed.debug_mode);
+        assert!(!parsed.test_all_animations);
+        assert_eq!(parsed.test_frame_anim, None, "must not also run a frame preview");
+    }
+
+    #[test]
+    fn test_test_signal_does_not_swallow_a_following_flag() {
+        let parsed = parse_from(argv(&["--test-signal", "Charging", "--no-sound"]));
+        assert_eq!(parsed.test_signal.as_deref(), Some("Charging"));
+        assert!(parsed.no_sound, "--no-sound was swallowed as the value");
+        assert!(parsed.enable_dbus, "--no-sound must not disable the control bus");
+
+        let parsed = parse_from(argv(&["--test-signal", "Charging", "--no-dbus"]));
+        assert_eq!(parsed.test_signal.as_deref(), Some("Charging"));
+        assert!(!parsed.enable_dbus);
+    }
+
+    #[test]
+    fn test_test_signal_frame_preview_are_exclusive() {
+        let parsed = parse_from(argv(&["--test-frame", "cube", "--test-signal", "Charging"]));
+        assert_eq!(parsed.test_signal.as_deref(), Some("Charging"));
+        assert_eq!(parsed.test_frame_anim, None);
+    }
+
+    #[test]
     fn test_no_sound_is_a_flag_with_no_value() {
         let parsed = parse_from(argv(&["--no-sound"]));
         assert!(parsed.no_sound);
@@ -310,7 +356,7 @@ mod tests {
         let help = help_text();
         for flag in [
             "--help", "--version", "--debug", "--daemon", "--log-file", "--no-dbus",
-            "--test-animations", "--test-frame", "--check-config", "--no-sound",
+            "--test-animations", "--test-frame", "--test-signal", "--check-config", "--no-sound",
         ] {
             assert!(help.contains(flag), "help text is missing {}", flag);
         }

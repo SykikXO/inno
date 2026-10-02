@@ -60,11 +60,31 @@ pub fn transition_frames(sig: &crate::config::Signal, config: &AppConfig) -> f64
     display_seconds(sig, config).unwrap_or(DEFAULT_DURATION_SECS as f64) * config.fps as f64
 }
 
+/// Whether a running animation can keep playing under a reloaded config.
+///
+/// True only when the signal at the same index still names the same frame
+/// animation. Keeping the index lets playback continue and pick up the new
+/// settings, which is what someone editing a font size expects.
+fn reload_keeps_animation(
+    current_idx: Option<usize>,
+    current_anim_ref: Option<&str>,
+    config: &AppConfig,
+) -> bool {
+    let Some(idx) = current_idx else { return false };
+    config
+        .signals
+        .get(idx)
+        .is_some_and(|sig| sig.animation_ref.as_deref() == current_anim_ref)
+}
+
 pub struct NotificationState {
     pub current_text: Option<String>,
     pub draw_state: DrawState,
     pub animating: bool,
     pub current_signal_idx: Option<usize>,
+    /// Frame animation the active notification is playing. Kept so a config
+    /// reload can tell whether the signal at that index is still the same one.
+    pub current_anim_ref: Option<String>,
     pub battery_devices: HashMap<String, (f64, String)>,
     pub prev_battery_agg: Option<String>,
     pub prev_state: HashMap<String, Option<String>>,
@@ -79,6 +99,7 @@ impl NotificationState {
             draw_state: DrawState::default(),
             animating: false,
             current_signal_idx: None,
+            current_anim_ref: None,
             battery_devices: HashMap::new(),
             prev_battery_agg: None,
             prev_state: HashMap::new(),
@@ -195,6 +216,7 @@ impl NotificationState {
 
         self.draw_state.reset();
         self.current_signal_idx = sig_idx;
+        self.current_anim_ref = sig.animation_ref.clone();
         self.current_text = Some(text.clone());
 
         // A frame animation wraps the procedural one, so a signal may name
@@ -234,9 +256,59 @@ impl NotificationState {
         notification_duration(sig, config)
     }
 
+    /// Renders a configured signal on demand, as if its event had arrived.
+    ///
+    /// This is the same path a real notification takes, so it is also the only
+    /// way to exercise a signal's transition and frame animation together
+    /// without having to produce the underlying DBus event.
+    pub fn show_test_signal(
+        &mut self,
+        app: &mut LayerApp,
+        config: &AppConfig,
+        sig: &crate::config::Signal,
+        sig_idx: usize,
+    ) -> std::time::Duration {
+        let text = format_text(
+            &config.format_template,
+            &sig.icon,
+            &sig.message,
+            Some(50.0),
+        );
+
+        self.draw_state.reset();
+        self.current_signal_idx = Some(sig_idx);
+        self.current_text = Some(text.clone());
+        self.current_anim_ref = sig.animation_ref.clone();
+
+        if let Some(anim_key) = sig.animation_ref.as_deref() {
+            match config.animations.get(anim_key) {
+                Some(asset) if app.ensure_animation_loaded(anim_key, asset, config) => {
+                    app.reset_animation(anim_key);
+                    self.animating = true;
+                    app.draw_frame_anim(
+                        anim_key,
+                        config,
+                        Some(sig),
+                        &text,
+                        &self.draw_state,
+                        false,
+                    );
+                    return notification_duration(sig, config);
+                }
+                Some(_) => eprintln!("Animation '{}' failed to load", anim_key),
+                None => eprintln!("Animation '{}' not found in config", anim_key),
+            }
+        }
+
+        app.draw_text_with_signal(&text, config, Some(sig), &self.draw_state);
+        self.animating = sig.animation != crate::config::Animation::None;
+        notification_duration(sig, config)
+    }
+
     pub fn hide_and_next(&mut self, app: &mut LayerApp) -> std::time::Duration {
         app.hide();
         self.current_text = None;
+        self.current_anim_ref = None;
         self.animating = false;
         self.draw_state.reset();
 
@@ -248,32 +320,57 @@ impl NotificationState {
             println!("Dismissed by click");
             app.hide();
             self.current_text = None;
+            self.current_anim_ref = None;
             self.animating = false;
             self.draw_state.reset();
         }
     }
 
-    pub fn on_config_reload(&mut self, app: &mut LayerApp) {
+    /// Handles a configuration reload.
+    ///
+    /// The matched signal index is cleared because it refers to the previous
+    /// config's signal list. Leaving `animating` set while it was cleared is
+    /// what used to freeze the last frame on screen and wake the timer to draw
+    /// nothing, so animation stops here.
+    ///
+    /// The notification itself is kept and redrawn with the new config rather
+    /// than hidden: it is still live, and making it vanish because someone
+    /// edited a font size would be a poor trade for fixing a busy loop. Its
+    /// existing hide timer is left alone.
+    pub fn on_config_reload(&mut self, app: &mut LayerApp, config: &AppConfig) {
         self.battery_devices.clear();
         self.prev_battery_agg = None;
         self.prev_state.clear();
         self.prev_signal_msg.clear();
         self.state_key_order.clear();
-        // Both animation paths resolve the active signal through
-        // current_signal_idx, which no longer refers to anything meaningful.
-        // Leaving it cleared while animating stayed true froze the last frame
-        // on screen and woke the timer to draw nothing, so drop the
-        // notification instead.
-        app.hide();
-        self.current_text = None;
-        self.current_signal_idx = None;
-        self.animating = false;
         self.draw_state.reset();
+
+        // A running animation keeps going when the new config still has the
+        // same signal in the same place showing the same animation, which is the
+        // common case: people edit a font size or a frame rate and expect what
+        // is on screen to pick it up. Only when the signal list moved under us
+        // does the animation stop.
+        //
+        // Clearing the index while leaving `animating` set is what used to
+        // freeze the last frame on screen and wake the timer to draw nothing, so
+        // the two are always decided together.
+        if !reload_keeps_animation(self.current_signal_idx, self.current_anim_ref.as_deref(), config) {
+            self.current_signal_idx = None;
+            self.current_anim_ref = None;
+            self.animating = false;
+            // Still a live notification, so redraw it rather than hiding it.
+            // Making it vanish because someone edited a config file would be a
+            // poor trade for fixing a busy loop.
+            if let Some(ref text) = self.current_text {
+                app.draw_text(text, config);
+            }
+        }
     }
 
     pub fn on_hide_control(&mut self, app: &mut LayerApp) {
         app.hide();
         self.current_text = None;
+        self.current_anim_ref = None;
         self.animating = false;
         self.draw_state.reset();
     }
@@ -288,5 +385,101 @@ impl NotificationState {
         app.draw_text(message, config);
         self.current_text = Some(message.to_string());
         self.animating = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Animation, AnimAsset, DisplayMode, OnComplete, Signal};
+    use std::path::PathBuf;
+
+    fn signal(anim_ref: Option<&str>) -> Signal {
+        Signal {
+            message: "x".into(),
+            icon: String::new(),
+            icon_size: 24.0,
+            color: (1.0, 1.0, 1.0, 1.0),
+            color_name: "white".into(),
+            threshold: 0.0,
+            state_filter: "any".into(),
+            animation: Animation::None,
+            animation_ref: anim_ref.map(str::to_string),
+            duration: Some(5),
+            sound: None,
+        }
+    }
+
+    fn config_with(signals: Vec<Signal>) -> AppConfig {
+        AppConfig { signals, ..Default::default() }
+    }
+
+    fn anim_asset() -> AnimAsset {
+        AnimAsset {
+            source: PathBuf::from("/test"),
+            fps: 30,
+            loop_: true,
+            display: DisplayMode::Text,
+            on_complete: OnComplete::Hold,
+            natural_duration: None,
+        }
+    }
+
+    #[test]
+    fn test_reload_keeps_animation_when_the_signal_still_matches() {
+        // Editing a font or a frame rate should not interrupt playback.
+        let config = config_with(vec![signal(Some("cube")), signal(Some("ripple"))]);
+        assert!(reload_keeps_animation(Some(1), Some("ripple"), &config));
+        assert!(reload_keeps_animation(Some(0), Some("cube"), &config));
+    }
+
+    #[test]
+    fn test_reload_drops_animation_when_the_signal_list_shrank() {
+        let config = config_with(vec![signal(Some("cube"))]);
+        assert!(!reload_keeps_animation(Some(3), Some("cube"), &config));
+        assert!(!reload_keeps_animation(Some(1), Some("cube"), &config));
+    }
+
+    #[test]
+    fn test_reload_drops_animation_when_that_signal_now_shows_something_else() {
+        // The index survived but the signal under it was reordered or edited,
+        // so continuing would play the wrong content.
+        let config = config_with(vec![signal(None), signal(Some("cube"))]);
+        assert!(!reload_keeps_animation(Some(0), Some("cube"), &config));
+        assert!(reload_keeps_animation(Some(1), Some("cube"), &config));
+    }
+
+    #[test]
+    fn test_reload_drops_animation_when_none_was_playing() {
+        let config = config_with(vec![signal(None)]);
+        assert!(!reload_keeps_animation(None, None, &config));
+        // No index but an animation reference recorded is inconsistent and must
+        // not be treated as still valid.
+        assert!(!reload_keeps_animation(None, Some("cube"), &config));
+    }
+
+    #[test]
+    fn test_reload_also_keeps_a_running_procedural_transition() {
+        // A text-only notification has no animation_ref on either side, so they
+        // match and a running fade survives the edit too.
+        let config = config_with(vec![signal(None)]);
+        assert!(reload_keeps_animation(Some(0), None, &config));
+    }
+
+    #[test]
+    fn test_reload_decision_does_not_depend_on_animation_frame_rate() {
+        // The frame rate is what usually changes in an edit; it must not be part
+        // of the decision.
+        let mut config = config_with(vec![signal(Some("cube"))]);
+        assert!(reload_keeps_animation(Some(0), Some("cube"), &config));
+        config.animations.insert("cube".into(), anim_asset());
+        assert!(reload_keeps_animation(Some(0), Some("cube"), &config));
+    }
+
+    #[test]
+    fn test_transition_frames_for_an_animated_signal() {
+        let config = AppConfig { fps: 30, ..Default::default() };
+        let sig = signal(Some("cube"));
+        assert_eq!(transition_frames(&sig, &config), 5.0 * 30.0);
     }
 }

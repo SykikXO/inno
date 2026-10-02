@@ -31,6 +31,20 @@ use state::NotificationState;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Opt-in frame-by-frame tracing, used to verify playback rate and transitions
+/// from a log rather than from pixels. Off unless INNO_TRACE is set, because it
+/// prints on every frame.
+static TRACE: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("INNO_TRACE").is_some());
+static TRACE_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+static TICK_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+thread_local! {
+    /// The period the clock was last pointed at, for the trace line.
+    static CURRENT_PERIOD: std::cell::RefCell<std::time::Duration> =
+        const { std::cell::RefCell::new(std::time::Duration::ZERO) };
+}
+
 /// Period between animation frames. `fps` is validated at config load, but clamp
 /// anyway so a bad value cannot produce a zero period and spin the loop.
 fn frame_delay(config: &AppConfig) -> Duration {
@@ -38,6 +52,27 @@ fn frame_delay(config: &AppConfig) -> Duration {
     // the loop. The upper bound stops a typo like 1000000 producing a 1us
     // period, which spins it just as hard.
     Duration::from_micros(1_000_000 / config.fps.clamp(1, 240))
+}
+
+/// Resolves the signal driving the current notification.
+///
+/// Test modes substitute a synthetic signal. Otherwise it is whichever config
+/// signal the event matched, which may be stale after a config reload. Kept in
+/// one place because two call sites need it and they used to disagree: a
+/// notification raised without a matching signal has no index, and reading the
+/// index alone silently dropped its animation on a scale change.
+fn active_signal<'a>(
+    state: &NotificationState,
+    config: &'a config::AppConfig,
+    test_signal: Option<&'a config::Signal>,
+) -> Option<&'a config::Signal> {
+    if let Some(signal) = test_signal {
+        return Some(signal);
+    }
+    state
+        .current_signal_idx
+        .filter(|&idx| idx < config.signals.len())
+        .map(|idx| &config.signals[idx])
 }
 
 /// Points the frame clock at a new period.
@@ -68,6 +103,7 @@ async fn main() -> anyhow::Result<()> {
         test_animation,
         test_all_animations,
         test_frame_anim,
+        test_signal,
         no_sound,
     } = args::parse();
 
@@ -267,10 +303,35 @@ async fn main() -> anyhow::Result<()> {
     let mut test_anim_idx = test_animation.unwrap_or(0);
     let mut test_timer = Box::pin(tokio::time::sleep(Duration::from_secs(0)));
     let test_frame_anim_name = test_frame_anim.clone();
+    let test_signal_name = test_signal.clone();
 
     if test_all_animations || test_frame_anim.is_some() {
         eprintln!("Animation testing mode enabled.");
         state.animating = true;
+    }
+
+    // A synthetic notification driven straight from the config, so a signal's
+    // transition and frame animation can be exercised without producing the
+    // underlying DBus event.
+    if let Some(ref wanted) = test_signal_name {
+        let found = config.signals.iter().position(|s| s.message == *wanted)
+            .or_else(|| config.signals.iter().position(|s| s.message.contains(wanted.as_str())));
+        match found {
+            Some(idx) => {
+                eprintln!("Testing signal[{}] {:?}", idx, wanted);
+                current_test_signal = Some(config.signals[idx].clone());
+                let delay = state.show_test_signal(&mut app, &config, &config.signals[idx], idx);
+                hide_timer = Box::pin(tokio::time::sleep(delay));
+            }
+            None => {
+                eprintln!(
+                    "No signal matches '{}'. Messages: {:?}",
+                    wanted,
+                    config.signals.iter().map(|s| &s.message).collect::<Vec<_>>()
+                );
+                return Ok(());
+            }
+        }
     }
 
     loop {
@@ -290,24 +351,23 @@ async fn main() -> anyhow::Result<()> {
 
             if let Some(ref text) = state.current_text {
                 state.draw_state.reset();
-                if let Some(idx) = state.current_signal_idx {
-                    if idx >= config.signals.len() {
-                        eprintln!("Stale signal index {}, clearing", idx);
-                        state.current_signal_idx = None;
-                        state.animating = false;
-                        app.hide();
-                    } else {
-                        let signal = &config.signals[idx];
-                        // A frame animation and the procedural transition are
-                        // independent, so either one keeps the timer running.
-                        state.animating = signal.animation_ref.is_some()
-                            || signal.animation != config::Animation::None;
-                        // Drawing here would flash a text card over an
-                        // animation-only notification; the timer redraws in
-                        // about a frame instead.
-                        if !state.animating {
-                            app.draw_text_with_signal(text, &config, Some(signal), &state.draw_state);
-                        }
+                if state.current_signal_idx.is_some_and(|idx| idx >= config.signals.len()) {
+                    eprintln!("Stale signal index, clearing");
+                    state.current_signal_idx = None;
+                    state.animating = false;
+                    app.hide();
+                } else if let Some(signal) =
+                    active_signal(&state, &config, current_test_signal.as_ref())
+                {
+                    // A frame animation and the procedural transition are
+                    // independent, so either one keeps the timer running.
+                    state.animating = signal.animation_ref.is_some()
+                        || signal.animation != config::Animation::None;
+                    // Drawing here would flash a text card over an
+                    // animation-only notification; the timer redraws in about
+                    // a frame instead.
+                    if !state.animating {
+                        app.draw_text_with_signal(text, &config, Some(signal), &state.draw_state);
                     }
                 } else {
                     app.draw_text(text, &config);
@@ -320,7 +380,10 @@ async fn main() -> anyhow::Result<()> {
             app.clicked = false;
             state.dismiss_by_click(&mut app);
             hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
-            if test_animation.is_some() || test_frame_anim_name.is_some() {
+            if test_animation.is_some()
+                || test_frame_anim_name.is_some()
+                || test_signal_name.is_some()
+            {
                 println!("Dismissed test, exiting.");
                 break;
             }
@@ -339,7 +402,7 @@ async fn main() -> anyhow::Result<()> {
                 app.frame_cache.clear();
                 app.clear_animations();
                 set_frame_clock(&mut animation_timer, frame_delay(&config));
-                state.on_config_reload(&mut app);
+                state.on_config_reload(&mut app, &config);
                 if (config.scale - old_scale).abs() > 0.01 {
                     eprintln!("Scale changed, redrawing...");
                     app.scale_changed = true;
@@ -368,7 +431,7 @@ async fn main() -> anyhow::Result<()> {
                         eprintln!("inno: reloaded {} signals", config.signals.len());
                         app.frame_cache.clear();
                         app.clear_animations();
-                        state.on_config_reload(&mut app);
+                        state.on_config_reload(&mut app, &config);
                     }
                 }
             }
@@ -495,44 +558,88 @@ async fn main() -> anyhow::Result<()> {
                     continue;
                 };
 
-                // Test mode swaps in its own synthetic signal; otherwise the active config
-                // signal decides. --test-frame and --test-animations are
-                // mutually exclusive, and the synthetic procedural signal
-                // never carries an animation_ref.
-                let active: Option<&config::Signal> = if test_frame_anim_name.is_some() {
+                if state.current_signal_idx.is_some_and(|idx| idx >= config.signals.len())
+                    && !test_frame_anim_name.is_some()
+                    && !test_signal_name.is_some()
+                {
+                    eprintln!("Stale signal index, clearing");
+                    state.current_signal_idx = None;
+                    state.animating = false;
+                    app.hide();
+                    continue;
+                }
+
+                // Only the test modes carry a synthetic signal; a real
+                // notification resolves through the matched signal index.
+                let synthetic = if test_frame_anim_name.is_some()
+                    || test_signal_name.is_some()
+                    || test_all_animations
+                {
                     current_test_signal.as_ref()
                 } else {
-                    state.current_signal_idx
-                        .filter(|&idx| !test_all_animations && idx < config.signals.len())
-                        .map(|idx| &config.signals[idx])
+                    None
                 };
 
-                // Point the clock at whatever is about to be ticked: a frame
-                // animation runs at its own rate, everything else at the
-                // general one. Without this the general path inherits the last
-                // frame animation's rate and plays back at the wrong speed.
-                let frame_anim_key = active
-                    .filter(|_| !test_all_animations)
-                    .and_then(|signal| signal.animation_ref.as_deref());
+                let Some(signal) = active_signal(&state, &config, synthetic).cloned() else {
+                    // A DBus Show with no matching signal still shows text.
+                    app.draw_text(text, &config);
+                    continue;
+                };
 
+                let frame_anim_key = signal
+                    .animation_ref
+                    .as_deref()
+                    .filter(|_| !test_all_animations);
+
+                // Point the clock at whatever is about to be ticked: a frame
+                // animation runs at its own rate, everything else at the general
+                // one. Without this the general path inherits the last frame
+                // animation's rate and plays back at the wrong speed.
                 let wanted = match frame_anim_key.and_then(|key| config.animations.get(key)) {
                     Some(asset) => Duration::from_micros(1_000_000 / asset.fps.clamp(1, 240)),
                     None => frame_delay(&config),
                 };
                 set_frame_clock(&mut animation_timer, wanted);
+                if *TRACE {
+                    let _ = TRACE_START.get_or_init(std::time::Instant::now);
+                    CURRENT_PERIOD.with(|p| *p.borrow_mut() = wanted);
+                }
 
-                if let Some(signal) = active
-                    && let Some(key) = frame_anim_key
-                {
-                    let tick = app.draw_frame_anim(
+                // The procedural transition advances on every tick, including
+                // while a frame animation drives the content, which is what
+                // lets the two compose.
+                let total_frames = state::transition_frames(&signal, &config);
+                state.draw_state.tick(&signal.animation, total_frames, config.fps as f64);
+                if *TRACE {
+                    let frame = state.draw_state.frame;
+                    let alpha = state.draw_state.alpha;
+                    let (ox, oy) = (state.draw_state.offset_x, state.draw_state.offset_y);
+                    let tick =
+                        TICK_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    eprintln!(
+                        "TRACE t={:.4} n={} frame={} alpha={:.3} off=({:.1},{:.1}) key={:?} anim={:?} total={:.0} period={:?}",
+                        TRACE_START.get().map(|s| s.elapsed().as_secs_f64()).unwrap_or(0.0),
+                        tick,
+                        frame,
+                        alpha,
+                        ox,
+                        oy,
+                        frame_anim_key,
+                        signal.animation,
+                        total_frames,
+                        CURRENT_PERIOD.with(|p| *p.borrow()),
+                    );
+                }
+
+                if let Some(key) = frame_anim_key {
+                    match app.draw_frame_anim(
                         key,
                         &config,
-                        Some(signal),
+                        Some(&signal),
                         text,
                         &state.draw_state,
                         true,
-                    );
-                    match tick {
+                    ) {
                         FrameTick::Continue => {
                             // The clock already runs at the animation's rate;
                             // re-arming it here would reintroduce the
@@ -540,9 +647,9 @@ async fn main() -> anyhow::Result<()> {
                             continue;
                         }
                         FrameTick::Finished(on_complete) => {
-                            // A non-looping animation reached its last frame. Stop
-                            // ticking rather than re-committing an identical
-                            // frame for the rest of the notification.
+                            // A non-looping animation reached its last frame.
+                            // Stop ticking rather than re-committing an
+                            // identical frame for the rest of the notification.
                             state.animating = false;
                             if on_complete == config::OnComplete::Hide {
                                 let delay = state.hide_and_next(&mut app);
@@ -551,35 +658,15 @@ async fn main() -> anyhow::Result<()> {
                             continue;
                         }
                         FrameTick::Unavailable => {
-                            eprintln!("Frame animation '{}' unavailable", key);
-                            state.animating = false;
-                            app.draw_text_with_signal(text, &config, Some(signal), &state.draw_state);
+                            eprintln!("Frame animation '{}' unavailable, showing text", key);
+                            app.failed_animations_insert(key);
+                            app.draw_text_with_signal(text, &config, Some(&signal), &state.draw_state);
                             continue;
                         }
                     }
                 }
 
-                // Procedural transition. Ticks even when a frame animation is
-                // driving the content, so the two compose.
-                if test_all_animations {
-                    if let Some(ref sig) = current_test_signal {
-                        let total_frames = state::transition_frames(sig, &config);
-                        state.draw_state.tick(&sig.animation, total_frames, config.fps as f64);
-                        app.draw_text_with_signal(text, &config, Some(sig), &state.draw_state);
-                    }
-                } else if let Some(idx) = state.current_signal_idx {
-                    if idx >= config.signals.len() {
-                        eprintln!("Stale signal index {}, clearing", idx);
-                        state.current_signal_idx = None;
-                        state.animating = false;
-                        app.hide();
-                    } else {
-                        let signal = &config.signals[idx];
-                        let total_frames = state::transition_frames(signal, &config);
-                        state.draw_state.tick(&signal.animation, total_frames, config.fps as f64);
-                        app.draw_text_with_signal(text, &config, Some(signal), &state.draw_state);
-                    }
-                }
+                app.draw_text_with_signal(text, &config, Some(&signal), &state.draw_state);
             }
 
             _ = &mut hide_timer => {
@@ -595,7 +682,10 @@ async fn main() -> anyhow::Result<()> {
                         let delay = state.hide_and_next(&mut app);
                         hide_timer = Box::pin(tokio::time::sleep(delay));
 
-                        if test_animation.is_some() || test_frame_anim_name.is_some() {
+                        if test_animation.is_some()
+                            || test_frame_anim_name.is_some()
+                            || test_signal_name.is_some()
+                        {
                             println!("Specific test completed, exiting.");
                             break;
                         }
