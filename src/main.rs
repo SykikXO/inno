@@ -57,8 +57,16 @@ fn set_frame_clock(clock: &mut tokio::time::Interval, period: Duration) {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
-    let Args { action, debug_mode, enable_dbus, log_file, test_animation, test_all_animations, test_frame_anim } =
-        args::parse();
+    let Args {
+        action,
+        debug_mode,
+        enable_dbus,
+        log_file,
+        test_animation,
+        test_all_animations,
+        test_frame_anim,
+        no_sound,
+    } = args::parse();
 
     match action {
         Action::Help => {
@@ -145,7 +153,17 @@ async fn main() -> anyhow::Result<()> {
     let (config_tx, mut config_rx) = mpsc::channel::<()>(1);
     let (control_tx, mut control_rx) = mpsc::channel::<ControlEvent>(10);
 
-    let sound_worker = SoundWorker::new();
+    // Probe once at startup and cache the winner. Re-probing per play would
+    // fork a process just to find out it still does not work.
+    let sound_worker = if no_sound || !config.sound {
+        eprintln!("inno: sounds disabled");
+        SoundWorker::disabled()
+    } else {
+        let worker = SoundWorker::probe();
+        eprintln!("inno: sound backend: {}", worker.describe());
+        worker
+    };
+    let mut sound_worker = sound_worker;
 
     let battery_percentage = Arc::new(AtomicU32::new(10000));
     let battery_state_shared = Arc::new(RwLock::new("unknown".to_string()));
@@ -357,7 +375,7 @@ async fn main() -> anyhow::Result<()> {
                         if let Some(delay) = state.process_notify(
                             &mut app,
                             &config,
-                            &sound_worker,
+                            &mut sound_worker,
                             &notify_event,
                             &battery_percentage,
                             &battery_state_shared,

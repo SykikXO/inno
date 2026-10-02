@@ -1,6 +1,6 @@
 [Unit]
 Description=inno Wayland notification daemon
-After=graphical-session.target
+After=graphical-session.target pipewire.service pipewire-pulse.service
 Wants=graphical-session.target
 
 [Service]

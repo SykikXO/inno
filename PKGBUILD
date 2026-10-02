@@ -6,7 +6,9 @@ pkgdesc="A lightweight, event-driven Wayland notification agent"
 arch=('x86_64')
 url="https://github.com/SykikXO/inno"
 license=('MIT')
-depends=('wayland' 'cairo' 'dbus' 'glibc')
+# pipewire-pulse supplies paplay and the sound server itself; without it
+# every sound path is dead on a bare system.
+depends=('wayland' 'cairo' 'dbus' 'glibc' 'pipewire-pulse')
 makedepends=('rust>=1.85' 'cargo')
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
 sha256sums=('SKIP')

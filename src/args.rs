@@ -16,6 +16,7 @@ pub struct Args {
     pub test_animation: Option<usize>,
     pub test_all_animations: bool,
     pub test_frame_anim: Option<String>,
+    pub no_sound: bool,
 }
 
 const HELP: &str = r#"inno - Wayland notification daemon with configurable DBus events
@@ -34,6 +35,7 @@ OPTIONS:
     --test-animations       Cycle through all procedural animations
     --test-frame <name>     Preview a frame animation from [animations] config
     --check-config          Validate config and exit
+    --no-sound              Disable notification sounds
 
 CONFIG:
     ~/.config/inno/inno.toml   (main config)
@@ -68,6 +70,7 @@ pub fn parse_from<I: IntoIterator<Item = String>>(args: I) -> Args {
     let mut test_animation: Option<usize> = None;
     let mut test_all_animations = false;
     let mut test_frame_anim: Option<String> = None;
+    let mut no_sound = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -107,6 +110,7 @@ pub fn parse_from<I: IntoIterator<Item = String>>(args: I) -> Args {
                 }
             }
             "--check-config" => check_config = true,
+            "--no-sound" => no_sound = true,
             _ => {}
         }
         i += 1;
@@ -138,7 +142,16 @@ pub fn parse_from<I: IntoIterator<Item = String>>(args: I) -> Args {
         test_all_animations = false;
     }
 
-    Args { action, debug_mode, enable_dbus, log_file, test_animation, test_all_animations, test_frame_anim }
+    Args {
+        action,
+        debug_mode,
+        enable_dbus,
+        log_file,
+        test_animation,
+        test_all_animations,
+        test_frame_anim,
+        no_sound,
+    }
 }
 
 pub fn help_text() -> &'static str {
@@ -169,6 +182,7 @@ mod tests {
         assert!(args.test_animation.is_none());
         assert!(!args.test_all_animations);
         assert!(args.test_frame_anim.is_none());
+        assert!(!args.no_sound);
     }
 
     #[test]
@@ -277,6 +291,13 @@ mod tests {
     }
 
     #[test]
+    fn test_no_sound_is_a_flag_with_no_value() {
+        let parsed = parse_from(argv(&["--no-sound"]));
+        assert!(parsed.no_sound);
+        assert!(parsed.enable_dbus, "--no-sound must not disable dbus");
+    }
+
+    #[test]
     fn test_unknown_flags_are_ignored() {
         let parsed = parse_from(argv(&["--nonsense", "--no-dbus", "--debug"]));
         assert!(!parsed.enable_dbus);
@@ -289,7 +310,7 @@ mod tests {
         let help = help_text();
         for flag in [
             "--help", "--version", "--debug", "--daemon", "--log-file", "--no-dbus",
-            "--test-animations", "--test-frame", "--check-config",
+            "--test-animations", "--test-frame", "--check-config", "--no-sound",
         ] {
             assert!(help.contains(flag), "help text is missing {}", flag);
         }

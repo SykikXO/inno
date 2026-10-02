@@ -51,6 +51,7 @@ struct GeneralConfig {
     format: Option<String>,
     output: Option<String>,
     battery_mode: Option<String>,
+    sound: Option<bool>,
     fps: Option<u64>,
     scale: Option<f64>,
 }
@@ -367,6 +368,7 @@ pub struct AppConfig {
     pub fps: u64,
     pub scale: f64,
     pub config_path: Option<PathBuf>,
+    pub sound: bool,
 }
 
 impl Default for AppConfig {
@@ -384,6 +386,7 @@ impl Default for AppConfig {
             border_radius: 0.0,
             gradient: false,
             format: "{message} {percent}%".to_string(),
+            sound: true,
             format_template: FormatTemplate::default(),
             output: OutputMode::Primary,
             battery_mode: BatteryMode::First,
@@ -534,6 +537,9 @@ impl AppConfig {
             }
             if let Some(out) = general.output {
                 self.output = parse_output_mode(&out);
+            }
+            if let Some(enabled) = general.sound {
+                self.sound = enabled;
             }
             if let Some(bm) = general.battery_mode {
                 self.battery_mode = parse_battery_mode(&bm);
