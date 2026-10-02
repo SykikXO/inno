@@ -220,11 +220,45 @@ compositor:
 INNO_TRACE=1 inno --test-signal Charging 2>&1 | grep TRACE
 ```
 
-`scripts/render-verify.sh` renders notifications inside a nested Hyprland on its
-own socket and reports the bounding box of everything that changed against a
-no-daemon baseline. It needs `grim` and `python3` with Pillow. Both matter: a
-screenshot of a live desktop contains a wallpaper and a terminal, so "there are
-bright pixels in the middle" proves nothing.
+### Render verification
+
+`scripts/render-verify.sh` checks what actually reaches the screen. It needs
+Hyprland, `grim`, `start-hyprland`, and `python3` with Pillow.
+
+```bash
+cargo build --release
+scripts/render-verify.sh                 # every check
+scripts/render-verify.sh scale fade      # named checks only
+```
+
+A screenshot of a live desktop contains a wallpaper, panels and a terminal, so
+"there are bright pixels in the middle of the screen" proves nothing. Three
+things fix that:
+
+- **An isolated compositor.** A nested Hyprland on its own socket, configured by
+  `scripts/render-hypr.lua`, which autostarts nothing and disables the wallpaper
+  and splash. Lua rather than `.conf` because Hyprland 0.57 removes `.conf` and
+  draws deprecation notices as overlays, and because it draws config errors in
+  the exact spot a notification would occupy.
+- **A blankness precondition.** After startup the surface must be almost uniform
+  and idle, or the script refuses to measure. That is what stops a broken
+  compositor config from being reported as a rendering result.
+- **Baseline differencing.** Each check captures with no daemon and again with
+  it, and reports the bounding box of everything that changed, so only pixels
+  inno drew are counted.
+
+It leaves nothing running: the compositor it starts is tracked by pid and killed
+on exit, and strays from an interrupted run are reaped first.
+
+The checks:
+
+| Check | Asserts |
+|---|---|
+| `timing` | Playback rate and drift, from `INNO_TRACE` |
+| `scale` | Rendered size tracks `scale` linearly and pixels track area |
+| `fade` | A transition reaches the screen for an animation-only notification |
+| `layout` | Animation above the text card, both centred |
+| `reload` | Playback survives a config edit and is still moving after |
 
 ### Sounds
 
