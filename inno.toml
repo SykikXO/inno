@@ -1,30 +1,62 @@
-# Inno Battery Notification Configuration
+# Inno Notification Configuration
+#
+# Search order: ./inno.toml, ~/.config/inno/inno.toml, /etc/xdg/inno/inno.toml.
+# Relative paths resolve against this file's directory, so the tree can be moved
+# or copied without editing anything.
+#
+# Validate after editing:  inno --check-config
+# It reports missing animation directories, frame directories with no PNGs, zero
+# frame rates, and signals pointing at an [animations] entry that does not exist.
 
-# Frame animations. Frames are decoded lazily and at display size, so a long
-# sequence costs almost nothing until it plays.
+# ---------------------------------------------------------------------------
+# Frame animations: a directory of PNG frames played as the notification body.
+#
 #   source      directory of PNG frames, relative to this file
-#   fps         playback rate; the frame clock follows this, not general.fps
+#   fps         playback rate. The frame clock follows this, not general.fps
 #   loop        restart at the end instead of finishing
 #   display     "anim" shows the animation alone, "text" puts it above the text
 #   on_complete what a non-looping animation does at its last frame:
-#               "hold" (default) leaves the frame up, "hide" dismisses,
-#               "loop" restarts regardless of loop
+#                 "hold" (default) leave the last frame up
+#                 "hide" dismiss the notification
+#                 "loop" restart regardless of loop
+#
+# Frames are decoded on demand and straight to display size, so a long sequence
+# costs almost nothing until it actually plays. Filenames are ordered naturally,
+# so frame_9.png plays before frame_10.png. Any resolution works; anything larger
+# than the display box is decoded down to fit.
+#
+# Adding your own: put a directory of PNGs anywhere and point `source` at it.
+# Preview one on its own with:  inno --test-frame <name>
+#
+# The bundled sets live in assets/animations/ and are installed to
+# /etc/xdg/inno/assets/animations/. To use them from a user config, copy them:
+#   mkdir -p ~/.config/inno/assets/animations
+#   cp -r assets/animations/* ~/.config/inno/assets/animations/
+# ---------------------------------------------------------------------------
 [animations]
+# 216 frames at 30fps, a 7.2s loop of a cube assembling itself.
 cube_charge = { source = "assets/animations/cube_charging", fps = 30, loop = true, display = "text" }
+# 30 frames at 12fps, a 2.5s loop of a ripple spreading out. Slower than 30fps
+# on purpose, where the same sequence reads as a flicker rather than a ripple.
 ripple = { source = "assets/animations/ripple_charge", fps = 12, loop = true, display = "text" }
-# A one-shot animation: plays through and then hides, rather than holding its
-# last frame. Change display to "anim" to show the animation with no text.
-once = { source = "assets/animations/ripple_charge", fps = 30, loop = false, display = "text", on_complete = "hide" }
+# A one-shot: plays through, then takes the notification down with it rather
+# than holding its last frame. Set display = "anim" to drop the text entirely.
+once = { source = "assets/animations/ripple_charge", fps = 20, loop = false, display = "text", on_complete = "hide" }
+# A larger source shown alone, with no text: nothing appears but the animation.
+cube_spin = { source = "assets/animations/cube_anim", fps = 24, loop = true, display = "anim" }
 
 [general]
 font = "InputMono Nerd Font"
 font_size = 18.0
 font_slant = "normal"    # normal, italic, oblique
 font_weight = "normal"   # normal, bold
-position = "center,center,0,0,0,0"
+# horizontal, vertical, margin_h, margin_v, offset_x, offset_y
+# Bottom edge of the notification, 90px up from the bottom of the screen.
+position = "center,bottom,0,90,0,0"
 format = "{message} {percent}%"
+# Frame rate for procedural transitions. Frame animations use their own fps.
 fps = 60
-# sound = false        # same as --no-sound
+# sound = false          # same as --no-sound
 
 [appearance]
 text_color = [1.0, 1.0, 1.0, 1.0]
@@ -33,7 +65,7 @@ border_radius = 8.0
 gradient = true
 
 # Optional settings
-# output = "primary"       # primary, all, or output name
+# output = "primary"       # primary, or an output name
 # battery_mode = "first"   # first, combined, highest, lowest
 
 # Named colors (referenced by signals)
@@ -45,9 +77,20 @@ yellow = [1.0, 1.0, 0.0, 1.0]
 green = [0.0, 1.0, 0.0, 1.0]
 violet = [0.6, 0.4, 0.8, 1.0]
 
-# Signals triggered based on battery state
-# Sound files are bundled in assets/sounds/ and should be copied to
-# ~/.config/inno/sounds/ for local use.
+# Signals, matched on battery state and percentage.
+#
+# `animation` is the transition and `animation_ref` is the content, and they
+# compose: the notification fades while the animation plays. Setting `animation`
+# to the name of an [animations] entry is shorthand for pointing `animation_ref`
+# at it with no transition.
+#
+# `duration` is optional. Omitted, it is derived from the frame animation's own
+# length, so there is nothing to keep in sync by hand. Set it to 0 to stay up
+# until dismissed.
+#
+# Preview any signal without waiting for its event:
+#   inno --test-signal Charging
+
 [[signal]]
 message = "Discharging"
 icon = ""
@@ -57,7 +100,7 @@ threshold = 100
 state = "discharging"
 animation = "fade"
 animation_ref = "ripple"
-duration = 8
+duration = 6
 sound = "assets/sounds/hardware_remove.wav"
 
 [[signal]]
@@ -67,12 +110,10 @@ icon_size = 28
 color = "green"
 threshold = 0
 state = "charging"
-# animation is the transition, animation_ref is the content, and they compose.
-# duration is omitted here, so the notification lasts exactly as long as the
-# cube does.
+# Fades in and out while the cube plays. No duration, so this lasts exactly as
+# long as the animation does.
 animation = "fade"
 animation_ref = "cube_charge"
-duration = 8
 sound = "assets/sounds/hardware_insert.wav"
 
 [[signal]]
@@ -83,6 +124,7 @@ color = "red"
 threshold = 15
 state = "discharging"
 animation = "blink"
+# Stays up until clicked.
 duration = 0
 sound = "assets/sounds/battery_critical.wav"
 
@@ -104,15 +146,14 @@ icon_size = 28
 color = "yellow"
 threshold = 80
 state = "charging"
-# Non-looping: plays through, then hides when the last frame lands. No
-# duration, so it lasts exactly as long as the animation does.
 animation = "pulse"
+# Non-looping, so it plays through and then hides when the last frame lands.
 animation_ref = "once"
 sound = "assets/sounds/notify.wav"
 
 [[signal]]
 message = "{message}"
-icon = "󰂱"
+icon = "󰀁"
 icon_size = 28
 color = "green"
 threshold = 100
@@ -123,7 +164,7 @@ sound = "assets/sounds/notify.wav"
 
 [[signal]]
 message = "{message}"
-icon = "󰂲"
+icon = "󰀂"
 icon_size = 28
 color = "white"
 threshold = 100
