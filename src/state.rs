@@ -11,15 +11,53 @@ use crate::sound::SoundWorker;
 
 const MAX_STATE_ENTRIES: usize = 32;
 
-/// How long a notification stays up. `duration = 0` means until dismissed.
-fn notification_duration(sig: &crate::config::Signal) -> std::time::Duration {
-    if sig.duration == 0 {
-        std::time::Duration::MAX
-    } else {
-        // The extra half second is a buffer so a transition still playing when
-        // the timer expires is not cut off mid-frame.
-        std::time::Duration::from_millis(sig.duration.saturating_mul(1000).saturating_add(500))
+/// Fallback display time when a signal sets neither `duration` nor a frame
+/// animation to derive one from.
+pub const DEFAULT_DURATION_SECS: u64 = 5;
+
+/// Buffer added to the display time so a transition still playing when the hide
+/// timer expires is not cut off mid-frame.
+const TRANSITION_TAIL_MS: u64 = 500;
+
+/// How long a notification stays up, in seconds, or `None` for indefinitely.
+///
+/// `duration = 0` means until dismissed. When omitted, a signal playing a frame
+/// animation lasts exactly as long as the animation does, which is almost
+/// always what someone animating a notification wants and never has to be kept
+/// in sync by hand.
+pub fn display_seconds(sig: &crate::config::Signal, config: &AppConfig) -> Option<f64> {
+    if let Some(secs) = sig.duration {
+        return (secs > 0).then_some(secs as f64);
     }
+
+    let animated =
+        sig.animation_ref.is_some() || sig.animation != crate::config::Animation::None;
+    let from_animation = sig
+        .animation_ref
+        .as_deref()
+        .and_then(|key| config.animations.get(key))
+        .and_then(|asset| asset.natural_duration)
+        .map(|length| length.as_secs_f64());
+
+    match (animated, from_animation) {
+        (true, Some(length)) => Some(length),
+        _ => Some(DEFAULT_DURATION_SECS as f64),
+    }
+}
+
+/// The hide delay for a notification.
+pub fn notification_duration(sig: &crate::config::Signal, config: &AppConfig) -> std::time::Duration {
+    match display_seconds(sig, config) {
+        None => std::time::Duration::MAX,
+        Some(secs) => std::time::Duration::from_millis(
+            (secs * 1000.0) as u64 + TRANSITION_TAIL_MS,
+        ),
+    }
+}
+
+/// How many frames the procedural transition spans.
+pub fn transition_frames(sig: &crate::config::Signal, config: &AppConfig) -> f64 {
+    display_seconds(sig, config).unwrap_or(DEFAULT_DURATION_SECS as f64) * config.fps as f64
 }
 
 pub struct NotificationState {
@@ -165,7 +203,7 @@ impl NotificationState {
         // both fields pointing at that key.
         if let Some(ref anim_key) = sig.animation_ref {
             match config.animations.get(anim_key) {
-                Some(asset) if app.ensure_animation_loaded(anim_key, asset) => {
+                Some(asset) if app.ensure_animation_loaded(anim_key, asset, config) => {
                     app.reset_animation(anim_key);
                     self.animating = true;
                     app.draw_frame_anim(
@@ -176,7 +214,7 @@ impl NotificationState {
                         &self.draw_state,
                         false,
                     );
-                    return notification_duration(sig);
+                    return notification_duration(sig, config);
                 }
                 Some(_) => {
                     eprintln!("Animation '{}' failed to load", anim_key);
@@ -193,13 +231,7 @@ impl NotificationState {
         // Buffer after animation completes before hiding the surface.
         // Must be generous: the animation timer isn't reset on notification show,
         // and accumulated timer jitter over many frames can delay completion.
-        if sig.duration == 0 {
-            std::time::Duration::MAX
-        } else if sig.animation != crate::config::Animation::None {
-            std::time::Duration::from_millis(sig.duration.saturating_mul(1000).saturating_add(500))
-        } else {
-            std::time::Duration::from_secs(sig.duration)
-        }
+        notification_duration(sig, config)
     }
 
     pub fn hide_and_next(&mut self, app: &mut LayerApp) -> std::time::Duration {

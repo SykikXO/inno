@@ -31,11 +31,28 @@ use state::NotificationState;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Sleep between procedural animation frames. `fps` is validated at config
-/// load, but clamp anyway so a bad value cannot produce a zero-duration
-/// timer and spin the loop.
+/// Period between animation frames. `fps` is validated at config load, but clamp
+/// anyway so a bad value cannot produce a zero period and spin the loop.
 fn frame_delay(config: &AppConfig) -> Duration {
     Duration::from_micros(1_000_000 / config.fps.clamp(1, 1_000_000))
+}
+
+/// Points the frame clock at a new period.
+///
+/// Sleeping for the frame period *after* drawing made the real period
+/// `render + 1/fps`, and the shortfall accumulated every frame instead of being
+/// absorbed, so animations played slow and ran long. Anchoring to deadlines
+/// keeps the rate, and skipping missed ticks means a slow frame drops a frame
+/// rather than falling behind for good.
+fn set_frame_clock(clock: &mut tokio::time::Interval, period: Duration) {
+    if clock.period() == period {
+        return;
+    }
+    *clock = tokio::time::interval(period);
+    clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // A fresh interval's first tick is already due, which would fire a frame
+    // immediately on every speed change. reset() pushes it out a full period.
+    clock.reset();
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -219,7 +236,10 @@ async fn main() -> anyhow::Result<()> {
 
     let mut state = NotificationState::new();
     let mut hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
-    let mut animation_timer = Box::pin(tokio::time::sleep(frame_delay(&config)));
+    let mut animation_timer = tokio::time::interval(frame_delay(&config));
+    animation_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // The first tick of a fresh interval is already due; push it out a period.
+    animation_timer.reset();
 
     let test_animations_list = config::Animation::TEST_VARIANTS;
     let mut current_test_signal: Option<config::Signal> = None;
@@ -297,7 +317,6 @@ async fn main() -> anyhow::Result<()> {
                 eprintln!("inno: reloaded {} signals", config.signals.len());
                 app.frame_cache.clear();
                 app.clear_animations();
-                animation_timer = Box::pin(tokio::time::sleep(frame_delay(&config)));
                 state.on_config_reload(&mut app);
                 if (config.scale - old_scale).abs() > 0.01 {
                     eprintln!("Scale changed, redrawing...");
@@ -363,7 +382,7 @@ async fn main() -> anyhow::Result<()> {
                         state_filter: "any".to_string(),
                         animation: config::Animation::None,
                         animation_ref: Some(frame_name.clone()),
-                        duration: 30,
+                        duration: Some(30),
                         sound: None,
                     };
                     let text = draw::format_text(
@@ -414,7 +433,7 @@ async fn main() -> anyhow::Result<()> {
                         state_filter: "any".to_string(),
                         animation: anim,
                         animation_ref: None,
-                        duration: 10,
+                        duration: Some(10),
                         sound: None,
                     };
 
@@ -444,9 +463,8 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
-            _ = &mut animation_timer, if state.animating => {
+            _ = animation_timer.tick(), if state.animating => {
                 let Some(text) = &state.current_text else {
-                    animation_timer = Box::pin(tokio::time::sleep(frame_delay(&config)));
                     continue;
                 };
 
@@ -465,6 +483,13 @@ async fn main() -> anyhow::Result<()> {
                 if let Some(signal) = active
                     && let Some(key) = signal.animation_ref.as_deref()
                 {
+                    // A frame animation runs at its own rate, not the general one.
+                    if let Some(asset) = config.animations.get(key) {
+                        set_frame_clock(
+                            &mut animation_timer,
+                            Duration::from_micros(1_000_000 / asset.fps.clamp(1, 1_000_000)),
+                        );
+                    }
                     let tick = app.draw_frame_anim(
                         key,
                         &config,
@@ -474,15 +499,21 @@ async fn main() -> anyhow::Result<()> {
                         true,
                     );
                     match tick {
-                        FrameTick::Continue(delay) => {
-                            animation_timer = Box::pin(tokio::time::sleep(delay));
+                        FrameTick::Continue => {
+                            // The clock already runs at the animation's rate;
+                            // re-arming it here would reintroduce the
+                            // draw-then-sleep drift this replaced.
                             continue;
                         }
-                        FrameTick::Finished => {
-                            // A non-looping animation reached its last frame.
-                            // Hold it and stop ticking rather than re-committing
-                            // an identical frame until the hide timer fires.
+                        FrameTick::Finished(on_complete) => {
+                            // A non-looping animation reached its last frame. Stop
+                            // ticking rather than re-committing an identical
+                            // frame for the rest of the notification.
                             state.animating = false;
+                            if on_complete == config::OnComplete::Hide {
+                                let delay = state.hide_and_next(&mut app);
+                                hide_timer = Box::pin(tokio::time::sleep(delay));
+                            }
                             continue;
                         }
                         FrameTick::Unavailable => {
@@ -498,7 +529,7 @@ async fn main() -> anyhow::Result<()> {
                 // driving the content, so the two compose.
                 if test_all_animations {
                     if let Some(ref sig) = current_test_signal {
-                        let total_frames = sig.duration as f64 * config.fps as f64;
+                        let total_frames = state::transition_frames(sig, &config);
                         state.draw_state.tick(&sig.animation, total_frames, config.fps as f64);
                         app.draw_text_with_signal(text, &config, Some(sig), &state.draw_state);
                     }
@@ -510,19 +541,18 @@ async fn main() -> anyhow::Result<()> {
                         app.hide();
                     } else {
                         let signal = &config.signals[idx];
-                        let total_frames = signal.duration as f64 * config.fps as f64;
+                        let total_frames = state::transition_frames(signal, &config);
                         state.draw_state.tick(&signal.animation, total_frames, config.fps as f64);
                         app.draw_text_with_signal(text, &config, Some(signal), &state.draw_state);
                     }
                 }
-                animation_timer = Box::pin(tokio::time::sleep(frame_delay(&config)));
             }
 
             _ = &mut hide_timer => {
                 if state.current_text.is_some() {
                     let is_infinite = state.current_signal_idx
-                        .map(|idx| config.signals.get(idx).is_some_and(|s| s.duration == 0))
-                        .unwrap_or(false);
+                        .and_then(|idx| config.signals.get(idx))
+                        .is_some_and(|sig| state::display_seconds(sig, &config).is_none());
 
                     if is_infinite {
                         hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));

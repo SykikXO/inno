@@ -1,10 +1,9 @@
-use crate::animation::AnimPlayer;
+use crate::animation::{AnimPlayer, TargetSize};
 use crate::config::AppConfig;
 use crate::config::{AnimAsset, DisplayMode, Signal};
 use crate::draw;
 use crate::draw::DrawState;
 use std::collections::HashMap;
-use std::time::Duration;
 use cairo::FontSlant;
 use cairo::FontWeight;
 use smithay_client_toolkit::{
@@ -50,6 +49,20 @@ struct RenderKey {
 /// Maximum logical pixels for the animation display area in text+anim mode.
 const MAX_ANIM_DISPLAY_PX: f64 = 200.0;
 
+/// Decode size for an animation, chosen from how it is displayed.
+fn anim_target(asset: &AnimAsset, scale: f64) -> TargetSize {
+    match asset.display {
+        // The animation is the whole notification, so it is drawn at its own
+        // size times the display scale.
+        DisplayMode::Anim => TargetSize::Scaled(scale),
+        // The animation shares the surface with text and fits a fixed box, so
+        // the box size is all that needs decoding.
+        DisplayMode::Text => TargetSize::LongestEdge(
+            (MAX_ANIM_DISPLAY_PX * scale).round().max(1.0) as i32,
+        ),
+    }
+}
+
 /// A decoded animation frame. Owns the surface; cloning is a refcount bump.
 pub struct AnimFrame {
     pub surface: cairo::ImageSurface,
@@ -59,11 +72,13 @@ pub struct AnimFrame {
 
 /// Outcome of advancing a frame animation by one tick.
 pub enum FrameTick {
-    /// Drawn; sleep this long before the next frame.
-    Continue(Duration),
+    /// Drawn. The frame clock already runs at the animation's own rate.
+    Continue,
     /// A non-looping animation reached its last frame. The surface already
     /// holds that frame, so stop ticking rather than re-committing it forever.
-    Finished,
+    /// Carries the animation's `on_complete` so the caller does not have to
+    /// look the asset up again.
+    Finished(crate::config::OnComplete),
     /// Nothing could be drawn.
     Unavailable,
 }
@@ -218,7 +233,7 @@ impl LayerApp {
         self.layer_surface = Some(layer);
     }
 
-    pub fn effective_scale(&self, config: &AppConfig) -> f64 {
+    fn effective_scale(&self, config: &AppConfig) -> f64 {
         config.scale * self.scale_factor as f64
     }
 
@@ -237,14 +252,25 @@ impl LayerApp {
 
         /// Loads an animation player by key. A no-op once loaded, and a recorded
     /// no-op after a failure so a broken path is not retried every tick.
-    pub fn ensure_animation_loaded(&mut self, key: &str, asset: &AnimAsset) -> bool {
+    pub fn ensure_animation_loaded(
+        &mut self,
+        key: &str,
+        asset: &AnimAsset,
+        config: &AppConfig,
+    ) -> bool {
         if self.anim_players.contains_key(key) {
             return true;
         }
         if self.failed_animations.contains(key) {
             return false;
         }
-        match AnimPlayer::load(&asset.source, asset.fps, asset.loop_, asset.display) {
+
+        let target = anim_target(asset, self.effective_scale(config));
+        // on_complete = "loop" wins over loop = false, otherwise a non-looping
+        // asset would reach FrameTick::Finished and never be told to loop.
+        let looping = asset.loop_ || asset.on_complete == crate::config::OnComplete::Loop;
+
+        match AnimPlayer::load(&asset.source, asset.fps, looping, asset.display, target) {
             Ok(player) => {
                 self.anim_players.insert(key.to_string(), player);
                 true
@@ -258,19 +284,17 @@ impl LayerApp {
     }
 
     /// Advances the animation and returns its current frame.
-    /// The surface is refcounted, so the clone is a pointer bump, not a copy.
-    fn animation_frame(player: &AnimPlayer) -> AnimFrame {
-        AnimFrame {
-            surface: player.current_frame().clone(),
-            w: player.frame_w,
-            h: player.frame_h,
-        }
+    fn animation_frame(player: &mut AnimPlayer) -> Option<AnimFrame> {
+        let (w, h) = (player.frame_w, player.frame_h);
+        // The surface is refcounted, so handing out a clone is a pointer bump.
+        Some(AnimFrame { surface: player.frame().ok()?.clone(), w, h })
     }
 
     pub fn tick_animation(&mut self, anim_key: &str) -> Option<(AnimFrame, bool)> {
         let player = self.anim_players.get_mut(anim_key)?;
         player.tick();
-        Some((Self::animation_frame(player), player.is_done()))
+        let done = player.is_done();
+        Some((Self::animation_frame(player)?, done))
     }
 
     pub fn reset_animation(&mut self, anim_key: &str) {
@@ -279,9 +303,8 @@ impl LayerApp {
         }
     }
 
-    pub fn get_animation_frame(&self, anim_key: &str) -> Option<AnimFrame> {
-        let player = self.anim_players.get(anim_key)?;
-        Some(Self::animation_frame(player))
+    pub fn get_animation_frame(&mut self, anim_key: &str) -> Option<AnimFrame> {
+        Self::animation_frame(self.anim_players.get_mut(anim_key)?)
     }
 
     /// Allocate a zeroed Wayland buffer backed by a SlotPool, returning the
@@ -365,17 +388,15 @@ impl LayerApp {
     }
 
     /// Draw animation-only display (replaces text notification entirely).
-    fn draw_animation_frame(
-        &mut self,
-        frame: &AnimFrame,
-        scale: f64,
-    ) {
+    fn draw_animation_frame(&mut self, frame: &AnimFrame) {
         if self.layer_surface.is_none() || !self.configured {
             return;
         }
 
-        let w = (frame.w as f64 * scale).ceil().max(1.0) as i32;
-        let h = (frame.h as f64 * scale).ceil().max(1.0) as i32;
+        // Frames for this display mode are already decoded at display size, so
+        // scaling again here would square the scale factor.
+        let w = frame.w.max(1);
+        let h = frame.h.max(1);
 
         self.width = w as u32;
         self.height = h as u32;
@@ -657,7 +678,7 @@ impl LayerApp {
         let Some(asset) = config.animations.get(anim_key) else {
             return FrameTick::Unavailable;
         };
-        if advance && !self.ensure_animation_loaded(anim_key, asset) {
+        if advance && !self.ensure_animation_loaded(anim_key, asset, config) {
             return FrameTick::Unavailable;
         }
 
@@ -670,18 +691,17 @@ impl LayerApp {
             return FrameTick::Unavailable;
         };
 
-        let scale = self.effective_scale(config);
         match asset.display {
-            DisplayMode::Anim => self.draw_animation_frame(&frame, scale),
+            DisplayMode::Anim => self.draw_animation_frame(&frame),
             DisplayMode::Text => {
                 self.draw_text_with_anim_bg(text, config, signal, draw_state, &frame)
             }
         }
 
         if advance && finished {
-            FrameTick::Finished
+            FrameTick::Finished(asset.on_complete)
         } else {
-            FrameTick::Continue(Duration::from_micros(1_000_000 / asset.fps.max(1)))
+            FrameTick::Continue
         }
     }
 

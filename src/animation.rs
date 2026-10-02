@@ -2,13 +2,41 @@ use anyhow::{anyhow, Context, Result};
 use cairo::ImageSurface;
 use std::path::{Path, PathBuf};
 
-/// Loaded frame animation ready for playback
+/// How large to decode frames.
+///
+/// Decoding straight to display size is what keeps this cheap: a 216-frame
+/// 640x640 set decoded at natural size is 337 MB resident and 88M pixels of
+/// per-frame scaling work. At a 200px display size it is a fraction of that.
+#[derive(Clone, Copy, Debug)]
+pub enum TargetSize {
+    /// Natural frame size times the display scale. Used when the animation is
+    /// the whole notification.
+    Scaled(f64),
+    /// Long edge in logical pixels, aspect preserved. Used when the animation
+    /// sits beside or above text.
+    LongestEdge(i32),
+}
+
+/// Frames kept decoded ahead of the playhead. One would be enough to avoid
+/// blocking on the frame being drawn; a few more absorb a slow disk and keep
+/// the loop from stalling when a tick lands between decodes.
+const LOOKAHEAD: usize = 3;
+
+/// A frame animation, decoded on demand.
+///
+/// Frames are held in a small ring keyed by position rather than all resident
+/// up front. Loading therefore costs one PNG decode instead of N, which
+/// matters because loading happens on the event loop.
 pub struct AnimPlayer {
-    pub frames: Vec<ImageSurface>,
+    /// Frame paths in playback order.
+    paths: Vec<PathBuf>,
+    /// Ring of decoded frames, each tagged with the position it holds.
+    ring: Vec<Option<(usize, ImageSurface)>>,
     pub fps: u64,
     pub loop_: bool,
     pub display: crate::config::DisplayMode,
     pub frame_idx: usize,
+    /// Dimensions frames are decoded at.
     pub frame_w: i32,
     pub frame_h: i32,
     done: bool,
@@ -17,7 +45,8 @@ pub struct AnimPlayer {
 impl std::fmt::Debug for AnimPlayer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AnimPlayer")
-            .field("frames", &self.frames.len())
+            .field("frames", &self.paths.len())
+            .field("decoded", &self.ring.iter().filter(|s| s.is_some()).count())
             .field("fps", &self.fps)
             .field("loop_", &self.loop_)
             .field("display", &self.display)
@@ -29,12 +58,16 @@ impl std::fmt::Debug for AnimPlayer {
     }
 }
 
+/// The PNG signature every frame file must start with.
+const PNG_MAGIC: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+
 impl AnimPlayer {
     pub fn load<P: AsRef<Path>>(
         source: P,
         fps: u64,
         loop_: bool,
         display: crate::config::DisplayMode,
+        target: TargetSize,
     ) -> Result<Self> {
         let path = source.as_ref();
         if !path.is_dir() {
@@ -55,50 +88,79 @@ impl AnimPlayer {
         entries.sort_by(|a, b| nat_compare(a, b));
 
         if entries.is_empty() {
-            return Err(anyhow!(
-                "No PNG files found in animation directory: {:?}",
-                path
-            ));
+            return Err(anyhow!("No PNG files found in animation directory: {:?}", path));
         }
 
-        let mut frames = Vec::with_capacity(entries.len());
-        let mut dims: Option<(i32, i32)> = None;
-
+        // Cheap up-front validation: read only the 8-byte signature of each
+        // frame so a corrupt file is reported now rather than mid-playback.
+        // Decoding all of them to find out is exactly what this design avoids.
         for entry in &entries {
+            let mut magic = [0u8; 8];
             let mut file = std::fs::File::open(entry)
                 .with_context(|| format!("Failed to open frame {:?}", entry))?;
-            let surface = ImageSurface::create_from_png(&mut file)
-                .map_err(|e| anyhow!("Failed to load frame {:?}: {}", entry, e))?;
-
-            let (w, h) = (surface.width(), surface.height());
-            match dims {
-                None => dims = Some((w, h)),
-                Some((ref_w, ref_h)) if w != ref_w || h != ref_h => {
-                    // Warn but don't fail — use first frame dimensions
-                    eprintln!(
-                        "Warning: frame {:?} dimensions ({}x{}) differ from first frame ({}x{})",
-                        entry, w, h, ref_w, ref_h
-                    );
-                }
-                _ => {}
+            std::io::Read::read_exact(&mut file, &mut magic)
+                .with_context(|| format!("Failed to read frame {:?}", entry))?;
+            if magic != PNG_MAGIC {
+                return Err(anyhow!("Frame is not a PNG: {:?}", entry));
             }
-            frames.push(surface);
         }
 
-        let (frame_w, frame_h) = dims.unwrap_or((1, 1));
-        // A zero fps would make the frame period divide to zero downstream.
-        let fps = fps.max(1);
+        // The first frame is decoded at natural size to learn the source
+        // dimensions, then scaled like the rest. It is the only frame ever held
+        // at full resolution.
+        let (source_w, source_h) = decode_natural(&entries[0])?;
 
-        Ok(Self {
-            frames,
-            fps,
+        let factor = match target {
+            TargetSize::Scaled(scale) => scale,
+            TargetSize::LongestEdge(px) => px as f64 / source_w.max(source_h) as f64,
+        };
+        // Never upscale: a larger target only wastes memory and softens the
+        // image, so the layer is scaled up at draw time instead.
+        let factor = if factor > 1.0 { 1.0 } else { factor.max(0.0) };
+        let frame_w = ((source_w as f64 * factor).round() as i32).max(1);
+        let frame_h = ((source_h as f64 * factor).round() as i32).max(1);
+
+        // A zero fps would make the frame period divide to zero and spin the
+        // event loop.
+        let mut player = Self {
+            paths: entries,
+            ring: vec![None; LOOKAHEAD + 1],
+            fps: fps.max(1),
             loop_,
             display,
             frame_idx: 0,
             frame_w,
             frame_h,
             done: false,
-        })
+        };
+        player.ensure(0)?;
+        player.prefetch();
+        Ok(player)
+    }
+
+    /// Makes sure `position` is decoded, evicting whatever shared its slot.
+    fn ensure(&mut self, position: usize) -> Result<()> {
+        let slot = position % self.ring.len();
+        if self.ring[slot].as_ref().is_some_and(|(p, _)| *p == position) {
+            return Ok(());
+        }
+        let surface = decode_scaled(&self.paths[position], (self.frame_w, self.frame_h))?;
+        self.ring[slot] = Some((position, surface));
+        Ok(())
+    }
+
+    /// Decodes the frames after the playhead so the next few ticks do not block.
+    /// A prefetch failure is not fatal: the frame being drawn is what matters,
+    /// and it is loaded on demand either way.
+    fn prefetch(&mut self) {
+        let start = self.frame_idx;
+        let end = (start + LOOKAHEAD).min(self.paths.len() - 1);
+        for position in start..=end {
+            if let Err(e) = self.ensure(position) {
+                eprintln!("inno: prefetch of frame {} failed: {}", position, e);
+                return;
+            }
+        }
     }
 
     pub fn tick(&mut self) {
@@ -107,20 +169,28 @@ impl AnimPlayer {
         }
 
         let next = self.frame_idx + 1;
-        if next >= self.frames.len() {
+        if next >= self.paths.len() {
             if self.loop_ {
                 self.frame_idx = 0;
             } else {
-                self.frame_idx = self.frames.len().saturating_sub(1);
+                self.frame_idx = self.paths.len() - 1;
                 self.done = true;
+                // Nothing new to decode: the playhead is parked.
+                return;
             }
         } else {
             self.frame_idx = next;
         }
+        self.prefetch();
     }
 
-    pub fn current_frame(&self) -> &ImageSurface {
-        &self.frames[self.frame_idx]
+    /// The current frame, decoded if it is not resident.
+    pub fn frame(&mut self) -> Result<&ImageSurface> {
+        self.ensure(self.frame_idx)?;
+        Ok(&self.ring[self.frame_idx % self.ring.len()]
+            .as_ref()
+            .expect("slot was just filled")
+            .1)
     }
 
     pub fn reset(&mut self) {
@@ -128,10 +198,57 @@ impl AnimPlayer {
         self.done = false;
     }
 
-    /// Whether a non-looping animation has completed
+    /// Whether a non-looping animation has reached its last frame.
     pub fn is_done(&self) -> bool {
         self.done
     }
+}
+
+/// Decodes a PNG at its natural size.
+fn decode_natural(path: &Path) -> Result<(i32, i32)> {
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("Failed to open frame {:?}", path))?;
+    let surface = ImageSurface::create_from_png(&mut file)
+        .map_err(|e| anyhow!("Failed to load frame {:?}: {}", path, e))?;
+    Ok((surface.width(), surface.height()))
+}
+
+/// Decodes a PNG and scales it to `target`.
+///
+/// Cairo's filters are bilinear, which aliases badly once the ratio passes
+/// about 2:1. Stepping down by halves first approximates a box filter, and each
+/// intermediate surface is smaller than the last so it costs little.
+fn decode_scaled(path: &Path, target: (i32, i32)) -> Result<ImageSurface> {
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("Failed to open frame {:?}", path))?;
+    let mut surface = ImageSurface::create_from_png(&mut file)
+        .map_err(|e| anyhow!("Failed to load frame {:?}: {}", path, e))?;
+
+    if (surface.width(), surface.height()) == target {
+        return Ok(surface);
+    }
+
+    let mut size = (surface.width(), surface.height());
+    while size.0 > target.0 * 2 && size.1 > target.1 * 2 {
+        let next = ((size.0 / 2).max(target.0), (size.1 / 2).max(target.1));
+        surface = resample(&surface, next)?;
+        size = next;
+    }
+    resample(&surface, target)
+}
+
+/// Paints `src` scaled into a new surface of `size`.
+fn resample(src: &ImageSurface, size: (i32, i32)) -> Result<ImageSurface> {
+    let out = ImageSurface::create(cairo::Format::ARgb32, size.0, size.1)
+        .context("Failed to allocate scaled frame")?;
+    {
+        let cr = cairo::Context::new(&out).context("Failed to create cairo context")?;
+        cr.scale(size.0 as f64 / src.width() as f64, size.1 as f64 / src.height() as f64);
+        cr.set_source_surface(src, 0.0, 0.0)?;
+        cr.paint()?;
+    }
+    out.flush();
+    Ok(out)
 }
 
 /// Orders filenames naturally: digit runs compare as numbers so `frame_9`
@@ -182,38 +299,36 @@ mod tests {
     use std::cmp::Ordering;
 
     const FPS: u64 = 30;
+    /// Small enough that nothing is downscaled.
+    const NATURAL: TargetSize = TargetSize::Scaled(1.0);
 
-    /// Builds a player directly. The state machine is pure index arithmetic, so
-    /// most of its tests need no filesystem at all. `done` is private to this
-    /// module, which is why the constructor lives here rather than in testutil.
-    fn anim_player(frames: usize, fps: u64, loop_: bool) -> AnimPlayer {
-        AnimPlayer {
-            frames: (0..frames)
-                .map(|_| cairo::ImageSurface::create(cairo::Format::ARgb32, 2, 2).unwrap())
-                .collect(),
-            fps,
-            loop_,
-            display: DisplayMode::Anim,
-            frame_idx: 0,
-            frame_w: 2,
-            frame_h: 2,
-            done: false,
-        }
+    fn load(dir: &Path, fps: u64, loop_: bool, target: TargetSize) -> AnimPlayer {
+        AnimPlayer::load(dir, fps, loop_, DisplayMode::Anim, target).unwrap()
     }
 
-    fn load(dir: &Path, fps: u64, loop_: bool) -> AnimPlayer {
-        AnimPlayer::load(dir, fps, loop_, DisplayMode::Anim).unwrap()
+    /// Builds a player over a real frame set. The directory has to outlive the
+    /// player because frames are read from it lazily, so it is returned too.
+    fn player(frames: usize, fps: u64, loop_: bool) -> (TempDir, AnimPlayer) {
+        let dir = TempDir::new("anim-sm");
+        dir.write_frames(frames);
+        let player = load(dir.path(), fps, loop_, NATURAL);
+        (dir, player)
+    }
+
+    /// How many frames are currently decoded and resident.
+    fn resident(player: &AnimPlayer) -> usize {
+        player.ring.iter().filter(|slot| slot.is_some()).count()
     }
 
     // --- loading ---------------------------------------------------------
 
     #[test]
-    fn test_load_reads_every_png_in_order() {
+    fn test_load_reads_every_png() {
         let dir = TempDir::new("anim-load");
         dir.write_frames(5);
 
-        let player = load(dir.path(), FPS, true);
-        assert_eq!(player.frames.len(), 5);
+        let player = load(dir.path(), FPS, true, NATURAL);
+        assert_eq!(player.paths.len(), 5);
         assert_eq!(player.fps, FPS);
         assert!(player.loop_);
         assert_eq!(player.frame_idx, 0);
@@ -221,11 +336,32 @@ mod tests {
     }
 
     #[test]
+    fn test_load_decodes_lazily_so_cost_does_not_scale_with_frame_count() {
+        // The whole point of the ring: a 216-frame animation must not decode 216
+        // frames up front, because load runs on the event loop.
+        let small = TempDir::new("anim-lazy-small");
+        small.write_frames(4);
+        let large = TempDir::new("anim-lazy-large");
+        large.write_frames(120);
+
+        let few = load(small.path(), FPS, true, NATURAL);
+        let many = load(large.path(), FPS, true, NATURAL);
+
+        assert_eq!(many.paths.len(), 120);
+        assert_eq!(
+            resident(&few),
+            resident(&many),
+            "resident frames should not grow with the frame count"
+        );
+        assert!(resident(&many) <= LOOKAHEAD + 1);
+    }
+
+    #[test]
     fn test_load_takes_dimensions_from_first_frame() {
         let dir = TempDir::new("anim-dims");
         dir.write_frames(2);
 
-        let player = load(dir.path(), FPS, true);
+        let player = load(dir.path(), FPS, true, NATURAL);
         assert_eq!((player.frame_w, player.frame_h), (2, 2));
     }
 
@@ -240,19 +376,19 @@ mod tests {
             .write_to_png(&mut std::fs::File::create(dir.join("frame_0001.png")).unwrap())
             .unwrap();
 
-        let player = load(dir.path(), FPS, true);
-        assert_eq!(player.frames.len(), 2);
+        let player = load(dir.path(), FPS, true, NATURAL);
+        assert_eq!(player.paths.len(), 2);
         assert_eq!((player.frame_w, player.frame_h), (2, 2));
     }
 
     #[test]
     fn test_load_clamps_zero_fps_to_one() {
         // A zero fps would make the frame period divide to zero and spin the
-        // event loop, so the loader clamps instead.
+        // event loop.
         let dir = TempDir::new("anim-fps0");
         dir.write_frames(2);
 
-        assert_eq!(load(dir.path(), 0, true).fps, 1);
+        assert_eq!(load(dir.path(), 0, true, NATURAL).fps, 1);
     }
 
     #[test]
@@ -265,7 +401,7 @@ mod tests {
         std::fs::write(dir.join(".png"), b"ignore me").unwrap();
         std::fs::create_dir(dir.join("subdir")).unwrap();
 
-        assert_eq!(load(dir.path(), FPS, true).frames.len(), 2);
+        assert_eq!(load(dir.path(), FPS, true, NATURAL).paths.len(), 2);
     }
 
     #[test]
@@ -277,39 +413,120 @@ mod tests {
             .unwrap();
         std::fs::copy(dir.join("a.PNG"), dir.join("b.png")).unwrap();
 
-        assert_eq!(load(dir.path(), FPS, true).frames.len(), 2);
+        assert_eq!(load(dir.path(), FPS, true, NATURAL).paths.len(), 2);
     }
 
     #[test]
     fn test_load_rejects_missing_directory() {
         let dir = TempDir::new("anim-absent");
         let missing = dir.join("nope");
-        let err = AnimPlayer::load(&missing, FPS, true, DisplayMode::Anim).unwrap_err();
+        let err = AnimPlayer::load(&missing, FPS, true, DisplayMode::Anim, NATURAL).unwrap_err();
         assert!(err.to_string().contains("not a directory"), "got: {}", err);
     }
 
     #[test]
     fn test_load_rejects_directory_with_no_frames() {
         let dir = TempDir::new("anim-empty");
-        let err = AnimPlayer::load(dir.path(), FPS, true, DisplayMode::Anim).unwrap_err();
+        let err = AnimPlayer::load(dir.path(), FPS, true, DisplayMode::Anim, NATURAL).unwrap_err();
         assert!(err.to_string().contains("No PNG files"), "got: {}", err);
     }
 
     #[test]
-    fn test_load_rejects_a_corrupt_frame() {
-        let dir = TempDir::new("anim-corrupt");
+    fn test_load_rejects_a_file_that_is_not_a_png() {
+        // Caught by the signature check at load, so it is reported before
+        // playback rather than on whichever tick reaches it.
+        let dir = TempDir::new("anim-notpng");
         dir.write_frames(2);
-        std::fs::write(dir.join("frame_0001.png"), b"not a png").unwrap();
+        std::fs::write(dir.join("frame_0001.png"), b"definitely not a png").unwrap();
 
-        let err = AnimPlayer::load(dir.path(), FPS, true, DisplayMode::Anim).unwrap_err();
-        assert!(err.to_string().contains("frame_0001"), "got: {}", err);
+        let err = AnimPlayer::load(dir.path(), FPS, true, DisplayMode::Anim, NATURAL).unwrap_err();
+        assert!(err.to_string().contains("not a PNG"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_a_frame_that_only_fails_on_decode_is_reported_when_reached() {
+        // Lazy loading trades up-front validation for not stalling the loop, so
+        // a file with a valid signature but broken data is not caught at load.
+        // It surfaces the first time the playhead needs it, which is the point
+        // at which there is something to report about.
+        let dir = TempDir::new("anim-truncated");
+        dir.write_frames(2);
+        let mut bytes = std::fs::read(dir.join("frame_0001.png")).unwrap();
+        bytes.truncate(20);
+        std::fs::write(dir.join("frame_0001.png"), bytes).unwrap();
+
+        let mut player = load(dir.path(), FPS, true, NATURAL);
+        assert!(player.frame().is_ok(), "frame 0 should be fine");
+        player.tick();
+        assert!(player.frame().is_err(), "frame 1 should report the failure");
+    }
+
+    // --- decode sizing ---------------------------------------------------
+
+    #[test]
+    fn test_longest_edge_target_downscales_preserving_aspect() {
+        let dir = TempDir::new("anim-downscale");
+        write_sized_frames(dir.path(), 64, 32, 3);
+
+        let player = load(dir.path(), FPS, true, TargetSize::LongestEdge(16));
+        // Long edge becomes 16, the short edge halves with it.
+        assert_eq!((player.frame_w, player.frame_h), (16, 8));
+    }
+
+    #[test]
+    fn test_scaled_target_shrinks_when_the_display_is_smaller() {
+        let dir = TempDir::new("anim-scaledown");
+        write_sized_frames(dir.path(), 40, 40, 2);
+
+        let player = load(dir.path(), FPS, true, TargetSize::Scaled(0.5));
+        assert_eq!((player.frame_w, player.frame_h), (20, 20));
+    }
+
+    #[test]
+    fn test_target_never_upscales() {
+        // Decoding above the source size would multiply memory for no gain, and
+        // cairo scales up at draw time anyway. An animation-only display on a
+        // high-DPI output therefore renders slightly soft rather than costing
+        // frames_per_frame * scale^2 * 4 bytes.
+        let dir = TempDir::new("anim-noupscale");
+        write_sized_frames(dir.path(), 8, 8, 1);
+
+        for target in [TargetSize::Scaled(4.0), TargetSize::LongestEdge(64)] {
+            let player = load(dir.path(), FPS, true, target);
+            assert_eq!((player.frame_w, player.frame_h), (8, 8));
+        }
+    }
+
+    #[test]
+    fn test_decoded_frame_is_actually_at_the_target_size() {
+        let dir = TempDir::new("anim-verify");
+        write_sized_frames(dir.path(), 64, 32, 2);
+
+        let mut player = load(dir.path(), FPS, true, TargetSize::LongestEdge(16));
+        let surface = player.frame().unwrap();
+        assert_eq!((surface.width(), surface.height()), (16, 8));
+    }
+
+    #[test]
+    fn test_a_large_downscale_stepped_by_halves_matches_a_direct_one() {
+        // The halving exists because bilinear aliases badly at big ratios. This
+        // checks the intermediate surfaces do not change the final result.
+        let dir = TempDir::new("anim-halve");
+        write_sized_frames(dir.path(), 256, 256, 1);
+        let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 256, 256).unwrap();
+        surface
+            .write_to_png(&mut std::fs::File::create(dir.join("frame_0000.png")).unwrap())
+            .unwrap();
+
+        let stepped = decode_scaled(dir.join("frame_0000.png").as_path(), (17, 17)).unwrap();
+        assert_eq!((stepped.width(), stepped.height()), (17, 17));
     }
 
     // --- looping state machine ------------------------------------------
 
     #[test]
     fn test_tick_wraps_when_looping() {
-        let mut player = anim_player(3, FPS, true);
+        let (_dir, mut player) = player(3, FPS, true);
         for expected in [1, 2, 0, 1, 2] {
             player.tick();
             assert_eq!(player.frame_idx, expected);
@@ -319,7 +536,7 @@ mod tests {
 
     #[test]
     fn test_tick_stops_at_last_frame_when_not_looping() {
-        let mut player = anim_player(3, FPS, false);
+        let (_dir, mut player) = player(3, FPS, false);
         for expected in [1, 2] {
             player.tick();
             assert_eq!(player.frame_idx, expected);
@@ -333,7 +550,7 @@ mod tests {
 
     #[test]
     fn test_tick_is_a_noop_once_done() {
-        let mut player = anim_player(2, FPS, false);
+        let (_dir, mut player) = player(2, FPS, false);
         player.tick();
         player.tick();
         assert!(player.is_done());
@@ -344,7 +561,7 @@ mod tests {
 
     #[test]
     fn test_single_frame_looping_never_completes() {
-        let mut player = anim_player(1, FPS, true);
+        let (_dir, mut player) = player(1, FPS, true);
         for _ in 0..5 {
             player.tick();
         }
@@ -354,7 +571,7 @@ mod tests {
 
     #[test]
     fn test_single_frame_non_looping_completes_on_first_tick() {
-        let mut player = anim_player(1, FPS, false);
+        let (_dir, mut player) = player(1, FPS, false);
         player.tick();
         assert_eq!(player.frame_idx, 0);
         assert!(player.is_done());
@@ -362,7 +579,7 @@ mod tests {
 
     #[test]
     fn test_reset_rearms_a_completed_animation() {
-        let mut player = anim_player(3, FPS, false);
+        let (_dir, mut player) = player(3, FPS, false);
         for _ in 0..5 {
             player.tick();
         }
@@ -374,22 +591,37 @@ mod tests {
     }
 
     #[test]
-    fn test_large_frame_count_cycles_without_drift() {
-        let mut player = anim_player(256, FPS, true);
-        for i in 1..=256 {
+    fn test_resident_frames_stay_bounded_over_a_long_playthrough() {
+        // The ring is what stops memory growing with frame count; this is the
+        // property that makes lazy decoding safe.
+        let (_dir, mut player) = player(200, FPS, true);
+        for _ in 0..500 {
             player.tick();
-            assert_eq!(player.frame_idx, i % 256);
+            assert!(
+                resident(&player) <= LOOKAHEAD + 1,
+                "resident frames grew to {}",
+                resident(&player)
+            );
+        }
+    }
+
+    #[test]
+    fn test_every_frame_decodes_on_the_way_past() {
+        let (_dir, mut player) = player(30, FPS, true);
+        for _ in 0..30 {
+            let surface = player.frame().expect("every frame should decode");
+            assert_eq!((surface.width(), surface.height()), (2, 2));
+            player.tick();
         }
     }
 
     #[test]
     fn test_current_frame_is_always_in_bounds() {
-        let mut player = anim_player(7, FPS, true);
+        let (_dir, mut player) = player(7, FPS, true);
         for _ in 0..100 {
             player.tick();
-            assert!(player.frame_idx < player.frames.len());
-            let frame = player.current_frame();
-            assert!(frame.width() > 0);
+            assert!(player.frame_idx < player.paths.len());
+            assert!(player.frame().unwrap().width() > 0);
         }
     }
 
@@ -416,9 +648,8 @@ mod tests {
         ];
         names.sort_by(|a, b| nat_compare(Path::new(a), Path::new(b)));
         for pair in names.windows(2) {
-            let ordering = nat_compare(Path::new(&pair[0]), Path::new(&pair[1]));
             assert_ne!(
-                ordering,
+                nat_compare(Path::new(&pair[0]), Path::new(&pair[1])),
                 Ordering::Greater,
                 "{} should not sort after {} (result {:?})",
                 pair[0],
@@ -436,8 +667,33 @@ mod tests {
         assert_eq!(nat_compare(small, huge), Ordering::Less);
     }
 
-    /// Writes a 2x2 PNG whose red channel encodes `value`, so the sort order
-    /// can be read back off the decoded frames.
+    #[test]
+    fn test_load_sorts_frames_naturally() {
+        let dir = TempDir::new("anim-sort");
+        write_tagged_frame(dir.path(), "f_10.png", 10);
+        write_tagged_frame(dir.path(), "f_2.png", 2);
+        write_tagged_frame(dir.path(), "f_1.png", 1);
+
+        let player = load(dir.path(), FPS, true, NATURAL);
+        let order: Vec<u8> = player.paths.iter().map(|p| red_of_file(p)).collect();
+        assert_eq!(order, vec![1, 2, 10], "frames should sort numerically");
+    }
+
+    // --- helpers ---------------------------------------------------------
+
+    fn write_sized_frames(dir: &Path, w: i32, h: i32, count: usize) {
+        for i in 0..count {
+            let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, w, h).unwrap();
+            surface
+                .write_to_png(
+                    &mut std::fs::File::create(dir.join(format!("frame_{i:04}.png"))).unwrap(),
+                )
+                .unwrap();
+        }
+    }
+
+    /// Writes a PNG whose red channel encodes `value`, so playback order can be
+    /// read back off the decoded frames.
     fn write_tagged_frame(dir: &Path, name: &str, value: u8) {
         let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 2, 2).unwrap();
         {
@@ -451,22 +707,13 @@ mod tests {
             .unwrap();
     }
 
-    fn red_channel(surface: &mut cairo::ImageSurface) -> u8 {
+    /// Reads the red channel straight from a file. It has to be its own decode:
+    /// cairo refuses pixel access while the ring holds a reference to the same
+    /// surface.
+    fn red_of_file(path: &Path) -> u8 {
+        let mut file = std::fs::File::open(path).unwrap();
+        let mut surface = cairo::ImageSurface::create_from_png(&mut file).unwrap();
         // ARGB32 in native byte order, so on little-endian this is index 2.
         surface.data().unwrap()[2]
-    }
-
-    #[test]
-    fn test_load_sorts_frames_naturally() {
-        let dir = TempDir::new("anim-sort");
-        write_tagged_frame(dir.path(), "f_10.png", 10);
-        write_tagged_frame(dir.path(), "f_2.png", 2);
-        write_tagged_frame(dir.path(), "f_1.png", 1);
-
-        let mut player = load(dir.path(), FPS, true);
-        let order: Vec<u8> = (0..player.frames.len())
-            .map(|i| red_channel(&mut player.frames[i]))
-            .collect();
-        assert_eq!(order, vec![1, 2, 10], "frames should sort numerically");
     }
 }

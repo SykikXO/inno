@@ -38,6 +38,7 @@ pub(crate) struct AnimAssetConfig {
     #[serde(rename = "loop")]
     pub(crate) loop_: Option<bool>,
     pub(crate) display: Option<String>,
+    pub(crate) on_complete: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -110,12 +111,40 @@ impl DisplayMode {
     }
 }
 
+/// What happens when a non-looping animation reaches its last frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum OnComplete {
+    /// Leave the last frame on screen until the notification is dismissed.
+    Hold,
+    /// Take the notification down as soon as the animation ends.
+    Hide,
+    /// Restart the animation instead of ending, whatever `loop` says.
+    Loop,
+}
+
+impl OnComplete {
+    /// `None` for an unrecognised value so the caller can warn.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_lowercase().as_str() {
+            "hold" => Some(OnComplete::Hold),
+            "hide" => Some(OnComplete::Hide),
+            "loop" => Some(OnComplete::Loop),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AnimAsset {
     pub source: PathBuf,
     pub fps: u64,
     pub loop_: bool,
     pub display: DisplayMode,
+    pub on_complete: OnComplete,
+    /// Playback length implied by the frame count and `fps`, measured at config
+    /// load by counting the directory. Counting is a scan, not a decode, so
+    /// this costs nothing.
+    pub natural_duration: Option<std::time::Duration>,
 }
 
 impl Animation {
@@ -314,7 +343,7 @@ pub struct Signal {
     pub state_filter: String,
     pub animation: Animation,
     pub animation_ref: Option<String>,
-    pub duration: u64,
+    pub duration: Option<u64>,
     pub sound: Option<PathBuf>,
 }
 
@@ -363,6 +392,27 @@ impl Default for AppConfig {
             config_path: None,
         }
     }
+}
+
+/// Playback length of a frame directory, from a file count and a frame rate.
+/// Scanning the directory is cheap, unlike decoding it.
+fn natural_duration(dir: &std::path::Path, fps: u64) -> Option<std::time::Duration> {
+    let frames = std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    e.path()
+                        .extension()
+                        .and_then(|x| x.to_str())
+                        .is_some_and(|x| x.eq_ignore_ascii_case("png"))
+                })
+                .count()
+        })
+        .unwrap_or(0);
+
+    (fps > 0 && frames > 0)
+        .then(|| std::time::Duration::from_secs_f64(frames as f64 / fps as f64))
 }
 
 fn parse_font_slant(s: &str) -> FontSlant {
@@ -531,21 +581,44 @@ impl AppConfig {
                 None => DisplayMode::Anim,
             };
 
+            let source = if anim_cfg.source.is_absolute() {
+                anim_cfg.source
+            } else if let Some(ref dir) = config_dir {
+                dir.join(&anim_cfg.source)
+            } else {
+                anim_cfg.source
+            };
+
+            let on_complete = match anim_cfg.on_complete.as_deref() {
+                Some(raw) => match OnComplete::parse(raw) {
+                    Some(mode) => mode,
+                    None => {
+                        eprintln!(
+                            "animations.{}: unknown on_complete '{}', defaulting to 'hold'",
+                            name, raw
+                        );
+                        OnComplete::Hold
+                    }
+                },
+                None => OnComplete::Hold,
+            };
+
+            // Not clamped here: a zero fps is reported by validate()
+            // rather than silently becoming a 1 fps animation.
+            let fps = anim_cfg.fps.unwrap_or(self.fps);
+            // Counting is a directory scan, not a decode, so the playback
+            // length is known without touching pixel data.
+            let natural_duration = natural_duration(&source, fps);
+
             self.animations.insert(
                 name,
                 AnimAsset {
-                    source: if anim_cfg.source.is_absolute() {
-                        anim_cfg.source
-                    } else if let Some(ref dir) = config_dir {
-                        dir.join(&anim_cfg.source)
-                    } else {
-                        anim_cfg.source
-                    },
-                    // Not clamped here: a zero fps is reported by validate()
-                    // rather than silently becoming a 1 fps animation.
-                    fps: anim_cfg.fps.unwrap_or(self.fps),
+                    source,
+                    fps,
                     loop_: anim_cfg.loop_.unwrap_or(true),
                     display,
+                    on_complete,
+                    natural_duration,
                 },
             );
         }
@@ -585,7 +658,7 @@ impl AppConfig {
                 state_filter: sig_cfg.state.to_lowercase(),
                 animation,
                 animation_ref,
-                duration: sig_cfg.duration.unwrap_or(5),
+                duration: sig_cfg.duration,
                 sound: sound_path,
             };
             self.signals.push(signal);
@@ -660,9 +733,8 @@ impl AppConfig {
             if sig.message.is_empty() {
                 errors.push(format!("signal[{}]: message is empty", i));
             }
-            if sig.duration == 0 {
-                // duration = 0 means infinite (no auto-hide, dismiss by click only)
-            }
+            // duration = 0 means infinite; omitted means derive it from the
+            // animation, so neither is an error.
             if sig.threshold < 0.0 || sig.threshold > 100.0 {
                 errors.push(format!("signal[{}]: threshold {} out of range 0-100", i, sig.threshold));
             }
@@ -703,36 +775,37 @@ impl AppConfig {
                     name,
                     anim.source.display()
                 ));
-                continue;
-            }
-
-            match std::fs::read_dir(&anim.source) {
-                Ok(entries) => {
-                    let pngs = entries
-                        .filter_map(|e| e.ok())
-                        .filter(|e| {
-                            e.path()
-                                .extension()
-                                .and_then(|x| x.to_str())
-                                .is_some_and(|x| x.eq_ignore_ascii_case("png"))
-                        })
-                        .count();
-                    if pngs == 0 {
-                        errors.push(format!(
-                            "animations.{}: no PNG frames in {}",
-                            name,
-                            anim.source.display()
-                        ));
+            } else {
+                match std::fs::read_dir(&anim.source) {
+                    Ok(entries) => {
+                        let pngs = entries
+                            .filter_map(|e| e.ok())
+                            .filter(|e| {
+                                e.path()
+                                    .extension()
+                                    .and_then(|x| x.to_str())
+                                    .is_some_and(|x| x.eq_ignore_ascii_case("png"))
+                            })
+                            .count();
+                        if pngs == 0 {
+                            errors.push(format!(
+                                "animations.{}: no PNG frames in {}",
+                                name,
+                                anim.source.display()
+                            ));
+                        }
                     }
+                    Err(e) => errors.push(format!(
+                        "animations.{}: cannot read {}: {}",
+                        name,
+                        anim.source.display(),
+                        e
+                    )),
                 }
-                Err(e) => errors.push(format!(
-                    "animations.{}: cannot read {}: {}",
-                    name,
-                    anim.source.display(),
-                    e
-                )),
             }
 
+            // Checked even when the source is unusable, so fixing one problem
+            // does not just reveal the next one on the next run.
             if anim.fps == 0 {
                 errors.push(format!("animations.{}: fps must be > 0", name));
             } else if anim.fps > 120 {
@@ -781,6 +854,19 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::{DEFAULT_DURATION_SECS, display_seconds, notification_duration, transition_frames};
+    use crate::testutil::TempDir;
+
+    /// Writes a config file into a temp dir and loads it. `load_toml` takes an
+    /// explicit path, so this needs no environment.
+    fn load_fixture(body: &str) -> (AppConfig, TempDir) {
+        let dir = TempDir::new("cfg");
+        let path = dir.join("inno.toml");
+        std::fs::write(&path, body).unwrap();
+        let mut cfg = AppConfig::default();
+        cfg.load_toml(&path).expect("fixture config should parse");
+        (cfg, dir)
+    }
 
     #[test]
     fn test_anchor_parse_full() {
@@ -833,7 +919,7 @@ mod tests {
                     threshold: 20.0,
                     state_filter: "charging".into(),
                     animation: Animation::None,
-                    duration: 5,
+                    duration: Some(5),
                     sound: None,
                     animation_ref: None,
                 },
@@ -846,7 +932,7 @@ mod tests {
                     threshold: 50.0,
                     state_filter: "charging".into(),
                     animation: Animation::None,
-                    duration: 5,
+                    duration: Some(5),
                     sound: None,
                     animation_ref: None,
                 },
@@ -859,7 +945,7 @@ mod tests {
                     threshold: 80.0,
                     state_filter: "charging".into(),
                     animation: Animation::None,
-                    duration: 5,
+                    duration: Some(5),
                     sound: None,
                     animation_ref: None,
                 },
@@ -886,7 +972,7 @@ mod tests {
                     threshold: 10.0,
                     state_filter: "discharging".into(),
                     animation: Animation::None,
-                    duration: 5,
+                    duration: Some(5),
                     sound: None,
                     animation_ref: None,
                 },
@@ -899,7 +985,7 @@ mod tests {
                     threshold: 30.0,
                     state_filter: "discharging".into(),
                     animation: Animation::None,
-                    duration: 5,
+                    duration: Some(5),
                     sound: None,
                     animation_ref: None,
                 },
@@ -924,7 +1010,7 @@ mod tests {
                 threshold: 50.0,
                 state_filter: "any".into(),
                 animation: Animation::None,
-                duration: 5,
+                duration: Some(5),
                 sound: None,
                 animation_ref: None,
             }],
@@ -985,7 +1071,7 @@ mod tests {
                 threshold: 50.0,
                 state_filter: "any".into(),
                 animation: Animation::None,
-                duration: 5,
+                duration: Some(5),
                 sound: None,
                 animation_ref: None,
             }],
@@ -1007,7 +1093,7 @@ mod tests {
                 threshold: 50.0,
                 state_filter: "any".into(),
                 animation: Animation::None,
-                duration: 0,
+                duration: Some(0),
                 sound: None,
                 animation_ref: None,
             }],
@@ -1029,7 +1115,7 @@ mod tests {
                 threshold: 50.0,
                 state_filter: "any".into(),
                 animation: Animation::None,
-                duration: 5,
+                duration: Some(5),
                 sound: None,
                 animation_ref: None,
             }],
@@ -1054,7 +1140,7 @@ mod tests {
                 threshold: 50.0,
                 state_filter: "any".into(),
                 animation: Animation::None,
-                duration: 5,
+                duration: Some(5),
                 sound: None,
                 animation_ref: None,
             }],
@@ -1077,7 +1163,7 @@ mod tests {
                 threshold: 50.0,
                 state_filter: "any".into(),
                 animation: Animation::None,
-                duration: 5,
+                duration: Some(5),
                 sound: None,
                 animation_ref: None,
             }],
@@ -1105,7 +1191,7 @@ mod tests {
                 threshold: 50.0,
                 state_filter: "any".into(),
                 animation: Animation::None,
-                duration: 5,
+                duration: Some(5),
                 sound: None,
                 animation_ref: None,
             }],
@@ -1163,7 +1249,7 @@ mod tests {
                 threshold: 80.0,
                 state_filter: "charging".into(),
                 animation: Animation::None,
-                duration: 5,
+                duration: Some(5),
                 sound: None,
                 animation_ref: None,
             }],
@@ -1187,7 +1273,7 @@ mod tests {
                 threshold: 15.0,
                 state_filter: "discharging".into(),
                 animation: Animation::None,
-                duration: 5,
+                duration: Some(5),
                 sound: None,
                 animation_ref: None,
             }],
@@ -1218,7 +1304,7 @@ mod tests {
                 threshold: 0.0,
                 state_filter: "charging".into(),
                 animation: Animation::None,
-                duration: 5,
+                duration: Some(5),
                 sound: None,
                 animation_ref: None,
             }],
@@ -1242,7 +1328,7 @@ mod tests {
                 threshold: 50.0,
                 state_filter: "charging".into(),
                 animation: Animation::None,
-                duration: 5,
+                duration: Some(5),
                 sound: None,
                 animation_ref: None,
             }],
@@ -1267,7 +1353,7 @@ mod tests {
                 threshold: 80.0,
                 state_filter: "any".into(),
                 animation: Animation::None,
-                duration: 5,
+                duration: Some(5),
                 sound: None,
                 animation_ref: None,
             }],
@@ -1324,7 +1410,7 @@ mod tests {
                 threshold: -5.0,
                 state_filter: "any".into(),
                 animation: Animation::None,
-                duration: 5,
+                duration: Some(5),
                 sound: None,
                 animation_ref: None,
             }],
@@ -1346,7 +1432,7 @@ mod tests {
                 threshold: 50.0,
                 state_filter: "any".into(),
                 animation: Animation::None,
-                duration: 5,
+                duration: Some(5),
                 sound: None,
                 animation_ref: None,
             }],
@@ -1369,7 +1455,7 @@ mod tests {
                 threshold: 50.0,
                 state_filter: "any".into(),
                 animation: Animation::None,
-                duration: 5,
+                duration: Some(5),
                 sound: None,
                 animation_ref: None,
             }],
@@ -1401,6 +1487,8 @@ mod tests {
                     fps: 30,
                     loop_: true,
                     display: DisplayMode::Text,
+                    on_complete: OnComplete::Hold,
+                    natural_duration: None,
                 },
             );
         }
@@ -1462,7 +1550,7 @@ mod tests {
             state_filter: "any".into(),
             animation: Animation::None,
             animation_ref: Some("typo".into()),
-            duration: 5,
+            duration: Some(5),
             sound: None,
         }];
         let (errors, _) = config.validate();
@@ -1479,5 +1567,176 @@ mod tests {
         let mode = DisplayMode::Text;
         let copy = mode; // Copy, not move
         assert_eq!(mode, copy);
+    }
+
+    // --- on_complete ----------------------------------------------------
+
+    #[test]
+    fn test_on_complete_parse() {
+        assert_eq!(OnComplete::parse("hold"), Some(OnComplete::Hold));
+        assert_eq!(OnComplete::parse("Hide"), Some(OnComplete::Hide));
+        assert_eq!(OnComplete::parse(" LOOP "), Some(OnComplete::Loop));
+        assert_eq!(OnComplete::parse("stop"), None);
+    }
+
+    #[test]
+    fn test_load_toml_defaults_on_complete_to_hold() {
+        let (cfg, _dir) = load_fixture(
+            r#"
+[animations]
+cube = { source = "assets" }
+
+[[signal]]
+message = "hi"
+color = "white"
+threshold = 10
+state = "any"
+animation_ref = "cube"
+"#,
+        );
+        assert_eq!(cfg.animations["cube"].on_complete, OnComplete::Hold);
+        assert!(cfg.animations["cube"].loop_);
+    }
+
+    #[test]
+    fn test_load_toml_reads_on_complete() {
+        let (cfg, _dir) = load_fixture(
+            r#"
+[animations]
+cube = { source = "assets", fps = 30, on_complete = "hide" }
+"#,
+        );
+        assert_eq!(cfg.animations["cube"].on_complete, OnComplete::Hide);
+    }
+
+    #[test]
+    fn test_load_toml_falls_back_to_hold_on_an_unknown_on_complete() {
+        let (cfg, _dir) = load_fixture(
+            r#"
+[animations]
+cube = { source = "assets", on_complete = "explode" }
+"#,
+        );
+        assert_eq!(cfg.animations["cube"].on_complete, OnComplete::Hold);
+    }
+
+    // --- derived playback length ----------------------------------------
+
+    #[test]
+    fn test_natural_duration_derives_length_from_a_frame_count() {
+        let dir = TempDir::new("cfg-dur");
+        dir.write_frames(90);
+
+        let at30 = natural_duration(dir.path(), 30).unwrap();
+        assert_eq!(at30, std::time::Duration::from_secs(3));
+
+        let at60 = natural_duration(dir.path(), 60).unwrap();
+        assert_eq!(at60, std::time::Duration::from_millis(1500));
+    }
+
+    #[test]
+    fn test_natural_duration_is_absent_without_frames_or_without_fps() {
+        let dir = TempDir::new("cfg-dur-edge");
+        assert_eq!(natural_duration(dir.path(), 30), None);
+
+        dir.write_frames(4);
+        assert_eq!(natural_duration(dir.path(), 0), None);
+    }
+
+    // --- notification timing --------------------------------------------
+
+    fn signal_with(duration: Option<u64>, anim_ref: Option<&str>, anim: Animation) -> Signal {
+        Signal {
+            message: "hi".into(),
+            icon: String::new(),
+            icon_size: 24.0,
+            color: (1.0, 1.0, 1.0, 1.0),
+            color_name: "white".into(),
+            threshold: 0.0,
+            state_filter: "any".into(),
+            animation: anim,
+            animation_ref: anim_ref.map(str::to_string),
+            duration,
+            sound: None,
+        }
+    }
+
+    #[test]
+    fn test_explicit_duration_always_wins() {
+        let cfg = AppConfig::default();
+        let sig = signal_with(Some(12), None, Animation::None);
+        assert_eq!(display_seconds(&sig, &cfg), Some(12.0));
+    }
+
+    #[test]
+    fn test_zero_duration_means_indefinite() {
+        let cfg = AppConfig::default();
+        let sig = signal_with(Some(0), None, Animation::None);
+        assert_eq!(display_seconds(&sig, &cfg), None);
+        assert_eq!(notification_duration(&sig, &cfg), std::time::Duration::MAX);
+    }
+
+    #[test]
+    fn test_omitted_duration_falls_back_to_the_default() {
+        let cfg = AppConfig::default();
+        let sig = signal_with(None, None, Animation::None);
+        assert_eq!(display_seconds(&sig, &cfg), Some(DEFAULT_DURATION_SECS as f64));
+    }
+
+    #[test]
+    fn test_omitted_duration_follows_the_frame_animation_length() {
+        let mut cfg = AppConfig::default();
+        cfg.animations.insert(
+            "cube".to_string(),
+            AnimAsset {
+                source: PathBuf::from("/test"),
+                fps: 30,
+                loop_: true,
+                display: DisplayMode::Text,
+                on_complete: OnComplete::Hold,
+                natural_duration: Some(std::time::Duration::from_secs(7)),
+            },
+        );
+
+        // 216 frames at 30fps is 7.2s; the config stores 7s here, and either
+        // way the point is that nobody has to write `duration` by hand.
+        let sig = signal_with(None, Some("cube"), Animation::None);
+        assert_eq!(display_seconds(&sig, &cfg), Some(7.0));
+
+        // An explicit duration still overrides the derived one.
+        let sig = signal_with(Some(2), Some("cube"), Animation::None);
+        assert_eq!(display_seconds(&sig, &cfg), Some(2.0));
+    }
+
+    #[test]
+    fn test_omitted_duration_uses_the_default_for_an_unresolvable_ref() {
+        let cfg = AppConfig::default();
+        let sig = signal_with(None, Some("typo"), Animation::None);
+        assert_eq!(display_seconds(&sig, &cfg), Some(DEFAULT_DURATION_SECS as f64));
+    }
+
+    #[test]
+    fn test_transition_frames_scales_with_fps() {
+        let cfg = AppConfig { fps: 60, ..Default::default() };
+        let sig = signal_with(Some(2), None, Animation::Fade);
+        assert_eq!(transition_frames(&sig, &cfg), 120.0);
+    }
+
+    #[test]
+    fn test_animation_only_reload_reports_the_new_assets() {
+        // Loading an [animations] table at all is the case --check-config
+        // previously ignored entirely.
+        let (cfg, _dir) = load_fixture(
+            r#"
+[animations]
+cube = { source = "assets", fps = 0 }
+"#,
+        );
+        let (errors, _) = cfg.validate();
+        assert!(
+            errors.iter().any(|e| e.contains("animations.cube") && e.contains("fps")),
+            "expected an fps error, got {:?}",
+            errors
+        );
     }
 }

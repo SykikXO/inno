@@ -534,7 +534,7 @@ mod tests {
             state_filter: "any".into(),
             animation: config::Animation::None,
             animation_ref: None,
-            duration: 5,
+            duration: Some(5),
             sound: None,
         }
     }
