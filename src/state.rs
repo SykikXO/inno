@@ -145,21 +145,42 @@ impl NotificationState {
         }
 
         self.draw_state.reset();
+        self.current_signal_idx = sig_idx;
+        self.current_text = Some(text.clone());
+
+        // Check for frame animation
+        if let Some(ref anim_key) = sig.animation_ref {
+            if let Some(asset) = config.animations.get(anim_key) {
+                if app.load_animation(anim_key, asset) {
+                    app.reset_animation(anim_key);
+                    self.animating = true;
+                    app.draw_initial_frame_anim(anim_key, config, Some(sig), &text, &self.draw_state);
+                    return if sig.duration == 0 {
+                        std::time::Duration::MAX
+                    } else {
+                        std::time::Duration::from_millis(
+                            sig.duration.saturating_mul(1000).saturating_add(500),
+                        )
+                    };
+                }
+            } else {
+                eprintln!("Animation '{}' not found in config", anim_key);
+            }
+        }
+
+        // Fall through to procedural animation
         app.draw_text_with_signal(&text, config, Some(sig), &self.draw_state);
         self.animating = sig.animation != crate::config::Animation::None;
-        self.current_signal_idx = sig_idx;
         // Buffer after animation completes before hiding the surface.
         // Must be generous: the animation timer isn't reset on notification show,
         // and accumulated timer jitter over many frames can delay completion.
-        let hide_delay = if sig.duration == 0 {
+        if sig.duration == 0 {
             std::time::Duration::MAX
         } else if sig.animation != crate::config::Animation::None {
             std::time::Duration::from_millis(sig.duration.saturating_mul(1000).saturating_add(500))
         } else {
             std::time::Duration::from_secs(sig.duration)
-        };
-        self.current_text = Some(text);
-        hide_delay
+        }
     }
 
     pub fn hide_and_next(&mut self, app: &mut LayerApp) -> std::time::Duration {

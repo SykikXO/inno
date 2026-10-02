@@ -1,7 +1,10 @@
+use crate::animation::AnimPlayer;
 use crate::config::AppConfig;
-use crate::config::Signal;
+use crate::config::{AnimAsset, DisplayMode, Signal};
 use crate::draw;
 use crate::draw::DrawState;
+use std::collections::HashMap;
+use std::time::Duration;
 use cairo::FontSlant;
 use cairo::FontWeight;
 use smithay_client_toolkit::{
@@ -42,6 +45,16 @@ struct RenderKey {
     border_radius: f64,
     gradient: bool,
     scale: f64,
+}
+
+/// Maximum logical pixels for the animation display area in text+anim mode.
+const MAX_ANIM_DISPLAY_PX: f64 = 200.0;
+
+/// Lightweight reference to a single animation frame for drawing.
+pub struct AnimFrameRef {
+    pub surface: cairo::ImageSurface,
+    pub w: i32,
+    pub h: i32,
 }
 
 pub struct FrameCache {
@@ -87,6 +100,7 @@ pub struct LayerApp {
     pub pointer: Option<wl_pointer::WlPointer>,
     pub clicked: bool,
     pub frame_cache: FrameCache,
+    pub anim_players: HashMap<String, AnimPlayer>,
 }
 
 impl LayerApp {
@@ -117,6 +131,7 @@ impl LayerApp {
             pointer: None,
             clicked: false,
             frame_cache: FrameCache::new(),
+            anim_players: HashMap::new(),
         })
     }
 
@@ -184,7 +199,7 @@ impl LayerApp {
         self.layer_surface = Some(layer);
     }
 
-    fn effective_scale(&self, config: &AppConfig) -> f64 {
+    pub fn effective_scale(&self, config: &AppConfig) -> f64 {
         config.scale * self.scale_factor as f64
     }
 
@@ -201,6 +216,162 @@ impl LayerApp {
         }
     }
 
+    /// Load an animation player by key (no-op if already loaded).
+    /// Returns true if the animation is available after loading.
+    pub fn load_animation(&mut self, key: &str, asset: &AnimAsset) -> bool {
+        if self.anim_players.contains_key(key) {
+            return true;
+        }
+        match AnimPlayer::load(&asset.source, asset.fps, asset.loop_, asset.display) {
+            Ok(player) => {
+                self.anim_players.insert(key.to_string(), player);
+                true
+            }
+            Err(e) => {
+                eprintln!("Failed to load animation '{}': {}", key, e);
+                false
+            }
+        }
+    }
+
+    /// Tick a frame animation and extract current frame data.
+    /// Returns (cloned frame surface, frame_w, frame_h, fps) or None if not found.
+    /// Clone avoids borrow conflicts — the surface is ref-counted, not deep-copied.
+    pub fn tick_animation(&mut self, anim_key: &str) -> Option<(cairo::ImageSurface, i32, i32, u64)> {
+        let player = self.anim_players.get_mut(anim_key)?;
+        player.tick();
+        let frame = player.current_frame().clone();
+        let w = player.frame_w;
+        let h = player.frame_h;
+        let fps = player.fps;
+        Some((frame, w, h, fps))
+    }
+
+    /// Reset a frame animation to first frame
+    pub fn reset_animation(&mut self, anim_key: &str) {
+        if let Some(player) = self.anim_players.get_mut(anim_key) {
+            player.reset();
+        }
+    }
+
+    /// Get current frame from an animation (no tick)
+    pub fn get_animation_frame(&self, anim_key: &str) -> Option<(cairo::ImageSurface, i32, i32)> {
+        let player = self.anim_players.get(anim_key)?;
+        let frame = player.current_frame().clone();
+        Some((frame, player.frame_w, player.frame_h))
+    }
+
+    /// Allocate a zeroed Wayland buffer backed by a SlotPool, returning the
+    /// wl_buffer, a raw pointer to the pixel data, and the stride.
+    /// Handles pool creation/resize, buffer creation, zeroing, and pointer
+    /// extraction in one place.  Returns `None` on allocation failure.
+    fn allocate_buffer(
+        &mut self,
+        w: i32,
+        h: i32,
+    ) -> Option<(smithay_client_toolkit::shm::slot::Buffer, *mut u8, i32)> {
+        let stride = w * 4;
+        let needed = (w as usize) * (h as usize) * 4;
+
+        match &mut self.pool {
+            None => {
+                self.pool =
+                    Some(SlotPool::new(needed, &self.shm_state).expect("Failed to create pool"));
+            }
+            Some(pool) => {
+                if pool.len() < needed {
+                    self.pool = Some(
+                        SlotPool::new(needed, &self.shm_state).expect("Failed to resize pool"),
+                    );
+                }
+            }
+        }
+
+        let pool = self.pool.as_mut().unwrap();
+        let (buffer, canvas) = pool
+            .create_buffer(w, h, stride, wl_shm::Format::Argb8888)
+            .ok()?;
+
+        for b in canvas.iter_mut() {
+            *b = 0;
+        }
+        // SAFETY: canvas is the exclusive mutable slice from SlotPool::create_buffer.
+        // We extract the raw pointer and drop canvas before creating the Cairo surface,
+        // so there is no aliased mutable reference.
+        let ptr = canvas.as_mut_ptr();
+        let _ = canvas;
+
+        Some((buffer, ptr, stride))
+    }
+
+    /// Submit a 1×1 transparent pixel (used to hide or clear the surface).
+    fn commit_transparent(&mut self) {
+        if self.layer_surface.is_none() {
+            return;
+        }
+        self.width = 1;
+        self.height = 1;
+
+        if let Some((buffer, _, _)) = self.allocate_buffer(1, 1) {
+            let layer = self.layer_surface.as_ref().unwrap();
+            layer.set_size(1, 1);
+            layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
+            layer.wl_surface().damage(0, 0, 1, 1);
+            layer.commit();
+        }
+    }
+
+    /// Draw animation-only display (replaces text notification entirely).
+    fn draw_animation_frame(
+        &mut self,
+        frame: &AnimFrameRef,
+        scale: f64,
+    ) {
+        if self.layer_surface.is_none() || !self.configured {
+            return;
+        }
+
+        let w = (frame.w as f64 * scale).ceil().max(1.0) as i32;
+        let h = (frame.h as f64 * scale).ceil().max(1.0) as i32;
+
+        self.width = w as u32;
+        self.height = h as u32;
+
+        let Some((buffer, ptr, stride)) = self.allocate_buffer(w, h) else { return };
+
+        unsafe {
+            let surface = cairo::ImageSurface::create_for_data_unsafe(
+                ptr, cairo::Format::ARgb32, w, h, stride,
+            )
+            .expect("cairo surface");
+
+            let cr = cairo::Context::new(&surface).unwrap();
+            let sw = w as f64;
+            let sh = h as f64;
+            let sx = sw / frame.w as f64;
+            let sy = sh / frame.h as f64;
+            let s = sx.min(sy);
+
+            cr.set_operator(cairo::Operator::Source);
+            cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
+            cr.paint().unwrap();
+
+            let dx = (sw - frame.w as f64 * s) / 2.0;
+            let dy = (sh - frame.h as f64 * s) / 2.0;
+            cr.translate(dx, dy);
+            cr.scale(s, s);
+            cr.set_source_surface(&frame.surface, 0.0, 0.0).unwrap();
+            cr.paint().unwrap();
+            surface.flush();
+        }
+
+        let layer = self.layer_surface.as_ref().unwrap();
+        layer.set_size(self.width, self.height);
+        layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
+        layer.wl_surface().damage(0, 0, w, h);
+        layer.commit();
+    }
+
     pub fn draw_text_with_signal(
         &mut self,
         text: &str,
@@ -213,7 +384,7 @@ impl LayerApp {
         }
 
         if signal.is_some_and(|s| s.animation == crate::config::Animation::Blink && !draw_state.visible) {
-            self.commit_clear();
+            self.commit_transparent();
             return;
         }
 
@@ -239,13 +410,123 @@ impl LayerApp {
             let (w, h) = draw::measure_text(text, config, signal, scale);
             if w <= 1 || h <= 1 {
                 self.frame_cache.clear();
-                self.commit_1x1();
+                self.commit_transparent();
                 return;
             }
             self.render_and_cache(text, config, signal, scale, key, w, h);
         }
 
         self.blit_cached(scale, draw_state);
+    }
+
+    /// Draw notification with animation frame on top, text below (vertical layout).
+    /// Each call creates a new buffer compositing the current animation frame
+    /// alongside the cached text. Text cache is reused across frames.
+    fn draw_text_with_anim_bg(
+        &mut self,
+        text: &str,
+        config: &AppConfig,
+        signal: Option<&Signal>,
+        draw_state: &DrawState,
+        frame: &AnimFrameRef,
+    ) {
+        if self.layer_surface.is_none() || !self.configured {
+            return;
+        }
+
+        let scale = self.effective_scale(config);
+
+        let key = RenderKey {
+            text: text.to_string(),
+            signal_icon: signal.map(|s| s.icon.clone()).unwrap_or_default(),
+            signal_icon_size: signal.map(|s| s.icon_size).unwrap_or(0.0),
+            signal_color: signal.map(|s| s.color).unwrap_or(config.text_color),
+            font: config.font.clone(),
+            font_size: config.font_size,
+            font_slant: config.font_slant,
+            font_weight: config.font_weight,
+            bg_color: config.bg_color,
+            text_color: config.text_color,
+            border_radius: config.border_radius,
+            gradient: config.gradient,
+            scale,
+        };
+
+        // Ensure text cache exists (rendered once)
+        if !self.frame_cache.matches(&key) {
+            let (tw, th) = draw::measure_text(text, config, signal, scale);
+            if tw <= 1 || th <= 1 {
+                self.frame_cache.clear();
+                self.commit_transparent();
+                return;
+            }
+            self.render_and_cache(text, config, signal, scale, key, tw, th);
+        }
+
+        // Clone the refcounted surface to avoid holding an immutable borrow
+        // on self.frame_cache across the allocate_buffer call.
+        let cached = match self.frame_cache.surface.clone() {
+            Some(s) => s,
+            None => return,
+        };
+        let text_w = self.frame_cache.width;
+        let text_h = self.frame_cache.height;
+
+        // Animation display size: cap at MAX_ANIM_DISPLAY_PX logical, scaled
+        let anim_w = (MAX_ANIM_DISPLAY_PX * scale).ceil() as i32;
+        let anim_h = anim_w; // square
+
+        // Vertical layout: anim on top, text below
+        let gap = (8.0 * scale).ceil() as i32;
+        let padding = (8.0 * scale).ceil() as i32;
+        let total_w = (padding * 2 + anim_w).max(padding * 2 + text_w);
+        let total_h = padding + anim_h + gap + text_h + padding;
+        let anim_x = (total_w - anim_w) / 2;
+        let text_x = (total_w - text_w) / 2;
+        let text_y = padding + anim_h + gap;
+
+        self.width = total_w as u32;
+        self.height = total_h as u32;
+
+        let Some((buffer, ptr, stride)) = self.allocate_buffer(total_w, total_h) else { return };
+
+        unsafe {
+            let surface = cairo::ImageSurface::create_for_data_unsafe(
+                ptr, cairo::Format::ARgb32, total_w, total_h, stride,
+            )
+            .expect("cairo surface");
+
+            let cr = cairo::Context::new(&surface).expect("cairo context");
+
+            // 1. Paint animation frame at top center, scaled to fit anim_w x anim_h
+            let sx = anim_w as f64 / frame.w as f64;
+            let sy = anim_h as f64 / frame.h as f64;
+            let s = sx.min(sy);
+            let dx = anim_x as f64 + (anim_w as f64 - frame.w as f64 * s) / 2.0;
+            let dy = padding as f64 + (anim_h as f64 - frame.h as f64 * s) / 2.0;
+            cr.save().unwrap();
+            cr.translate(dx, dy);
+            cr.scale(s, s);
+            cr.set_source_surface(&frame.surface, 0.0, 0.0).unwrap();
+            cr.paint().unwrap();
+            cr.restore().unwrap();
+
+            // 2. Blit cached text below the animation
+            cr.set_source_surface(
+                &cached,
+                text_x as f64 + draw_state.offset_x * scale,
+                text_y as f64 + draw_state.offset_y * scale,
+            )
+            .unwrap();
+            cr.paint_with_alpha(draw_state.alpha).unwrap();
+            surface.flush();
+        }
+
+        let layer = self.layer_surface.as_ref().unwrap();
+        layer.set_size(self.width, self.height);
+        layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
+        layer.wl_surface().damage(0, 0, total_w, total_h);
+        layer.commit();
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -264,47 +545,11 @@ impl LayerApp {
         self.width = w as u32;
         self.height = h as u32;
 
-        let needed = self.width as usize * self.height as usize * 4;
-        match &mut self.pool {
-            None => {
-                self.pool =
-                    Some(SlotPool::new(needed, &self.shm_state).expect("Failed to create pool"));
-            }
-            Some(pool) => {
-                if pool.len() < needed {
-                    self.pool = Some(
-                        SlotPool::new(needed, &self.shm_state).expect("Failed to resize pool"),
-                    );
-                }
-            }
-        }
-
-        let stride = self.width as i32 * 4;
-
-        let (buffer, canvas) = {
-            let pool = self.pool.as_mut().unwrap();
-            pool.create_buffer(
-                self.width as i32,
-                self.height as i32,
-                stride,
-                wl_shm::Format::Argb8888,
-            )
-            .expect("create buffer")
-        };
-
-        // SAFETY: canvas is the exclusive mutable slice from SlotPool::create_buffer.
-        // We extract the raw pointer and drop canvas before creating the Cairo surface,
-        // so there is no aliased mutable reference.
-        let ptr = canvas.as_mut_ptr();
-        let _ = canvas;
+        let Some((buffer, ptr, stride)) = self.allocate_buffer(w, h) else { return };
 
         unsafe {
             let surface = cairo::ImageSurface::create_for_data_unsafe(
-                ptr,
-                cairo::Format::ARgb32,
-                self.width as i32,
-                self.height as i32,
-                stride,
+                ptr, cairo::Format::ARgb32, w, h, stride,
             )
             .expect("cairo surface");
 
@@ -327,62 +572,30 @@ impl LayerApp {
         let layer = self.layer_surface.as_ref().unwrap();
         layer.set_size(self.width, self.height);
         layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
-        layer.wl_surface().damage(0, 0, self.width as i32, self.height as i32);
+        layer.wl_surface().damage(0, 0, w, h);
         layer.commit();
     }
 
     fn blit_cached(&mut self, scale: f64, draw_state: &DrawState) {
-        let cached = self.frame_cache.surface.as_ref().unwrap();
+        // Clone the refcounted surface to avoid holding an immutable borrow
+        // on self.frame_cache across the allocate_buffer call.
+        let cached = self.frame_cache.surface.clone().unwrap();
         let w = self.frame_cache.width;
         let h = self.frame_cache.height;
 
         self.width = w as u32;
         self.height = h as u32;
 
-        let stride = w * 4;
-        let needed = (w * h * 4) as usize;
-
-        match &mut self.pool {
-            None => {
-                self.pool =
-                    Some(SlotPool::new(needed, &self.shm_state).expect("Failed to create pool"));
-            }
-            Some(pool) => {
-                if pool.len() < needed {
-                    self.pool = Some(
-                        SlotPool::new(needed, &self.shm_state).expect("Failed to resize pool"),
-                    );
-                }
-            }
-        }
-
-        let (buffer, canvas) = {
-            let pool = self.pool.as_mut().unwrap();
-            pool.create_buffer(w, h, stride, wl_shm::Format::Argb8888)
-                .expect("create buffer")
-        };
-
-        // SAFETY: canvas is the exclusive mutable slice from SlotPool::create_buffer.
-        // We zero it, extract the raw pointer, and drop canvas before creating the Cairo
-        // surface, so there is no aliased mutable reference.
-        for b in canvas.iter_mut() {
-            *b = 0;
-        }
-        let ptr = canvas.as_mut_ptr();
-        let _ = canvas;
+        let Some((buffer, ptr, stride)) = self.allocate_buffer(w, h) else { return };
 
         unsafe {
             let surface = cairo::ImageSurface::create_for_data_unsafe(
-                ptr,
-                cairo::Format::ARgb32,
-                w,
-                h,
-                stride,
+                ptr, cairo::Format::ARgb32, w, h, stride,
             )
             .expect("cairo surface");
 
             let cr = cairo::Context::new(&surface).expect("cairo context");
-            cr.set_source_surface(cached, draw_state.offset_x * scale, draw_state.offset_y * scale).unwrap();
+            cr.set_source_surface(&cached, draw_state.offset_x * scale, draw_state.offset_y * scale).unwrap();
             cr.paint_with_alpha(draw_state.alpha).unwrap();
             surface.flush();
         }
@@ -394,62 +607,65 @@ impl LayerApp {
         layer.commit();
     }
 
-    fn commit_clear(&mut self) {
-        if let Some(layer) = &self.layer_surface {
-            self.width = 1;
-            self.height = 1;
-            layer.set_size(1, 1);
-
-            if let Some(pool) = &mut self.pool
-                && let Ok((buffer, canvas)) = pool.create_buffer(1, 1, 4, wl_shm::Format::Argb8888)
-            {
-                for i in canvas.iter_mut() {
-                    *i = 0;
-                }
-                layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
-                layer.wl_surface().damage(0, 0, 1, 1);
-                layer.commit();
-            }
-        }
-    }
-
-    fn commit_1x1(&mut self) {
-        if let Some(layer) = &self.layer_surface
-            && let Some(pool) = &mut self.pool
-            && let Ok((buffer, canvas)) = pool.create_buffer(1, 1, 4, wl_shm::Format::Argb8888)
-        {
-            for i in canvas.iter_mut() {
-                *i = 0;
-            }
-            layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
-            layer.wl_surface().damage(0, 0, 1, 1);
-            layer.commit();
-        }
-    }
-
     /// Draw text without signal (for DBus Show command)
     pub fn draw_text(&mut self, text: &str, config: &AppConfig) {
         let draw_state = DrawState::default();
         self.draw_text_with_signal(text, config, None, &draw_state);
     }
 
-    pub fn hide(&mut self) {
-        if let Some(layer) = &self.layer_surface {
-            self.width = 1;
-            self.height = 1;
-            layer.set_size(1, 1);
+    /// Tick a frame animation forward and draw it according to its display mode.
+    /// Returns the per-frame sleep duration on success, or `None` if the
+    /// animation doesn't exist or couldn't be loaded.
+    pub fn tick_and_draw_frame_anim(
+        &mut self,
+        anim_key: &str,
+        config: &AppConfig,
+        signal: Option<&Signal>,
+        text: &str,
+        draw_state: &DrawState,
+    ) -> Option<Duration> {
+        let asset = config.animations.get(anim_key)?;
+        self.load_animation(anim_key, asset);
+        let (surface, w, h, fps) = self.tick_animation(anim_key)?;
+        let frame_ref = AnimFrameRef { surface, w, h };
+        let scale = self.effective_scale(config);
 
-            if let Some(pool) = &mut self.pool
-                && let Ok((buffer, canvas)) = pool.create_buffer(1, 1, 4, wl_shm::Format::Argb8888)
-            {
-                for i in canvas.iter_mut() {
-                    *i = 0;
-                }
-                layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
-                layer.wl_surface().damage(0, 0, 1, 1);
-                layer.commit();
-            }
+        match asset.display {
+            DisplayMode::Anim => self.draw_animation_frame(&frame_ref, scale),
+            DisplayMode::Text => self.draw_text_with_anim_bg(text, config, signal, draw_state, &frame_ref),
         }
+
+        Some(Duration::from_micros(1_000_000 / fps.max(1)))
+    }
+
+    /// Draw the initial frame of a frame animation (no tick) according to its display mode.
+    pub fn draw_initial_frame_anim(
+        &mut self,
+        anim_key: &str,
+        config: &AppConfig,
+        signal: Option<&Signal>,
+        text: &str,
+        draw_state: &DrawState,
+    ) {
+        let Some((surface, w, h)) = self.get_animation_frame(anim_key) else { return };
+        let frame_ref = AnimFrameRef { surface, w, h };
+        let asset = match config.animations.get(anim_key) {
+            Some(a) => a,
+            None => return,
+        };
+        let scale = self.effective_scale(config);
+        match asset.display {
+            DisplayMode::Anim => self.draw_animation_frame(&frame_ref, scale),
+            DisplayMode::Text => self.draw_text_with_anim_bg(text, config, signal, draw_state, &frame_ref),
+        }
+    }
+
+    pub fn clear_animations(&mut self) {
+        self.anim_players.clear();
+    }
+
+    pub fn hide(&mut self) {
+        self.commit_transparent();
     }
 }
 

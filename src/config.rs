@@ -27,6 +27,17 @@ struct ConfigFile {
     colors: HashMap<String, [f64; 4]>,
     #[serde(default)]
     signal: Vec<SignalConfig>,
+    #[serde(default)]
+    animations: HashMap<String, AnimAssetConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct AnimAssetConfig {
+    pub(crate) source: PathBuf,
+    pub(crate) fps: Option<u64>,
+    #[serde(rename = "loop")]
+    pub(crate) loop_: Option<bool>,
+    pub(crate) display: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -64,6 +75,8 @@ struct SignalConfig {
     animation: String,
     duration: Option<u64>,
     sound: Option<String>,
+    #[serde(default)]
+    animation_ref: Option<String>,
 }
 
 // Runtime config structures
@@ -76,6 +89,29 @@ pub enum Animation {
     SlideLeft,
     SlideRight,
     Bounce,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DisplayMode {
+    Anim,
+    Text,
+}
+
+impl DisplayMode {
+    pub fn parse(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "text" => DisplayMode::Text,
+            _ => DisplayMode::Anim,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AnimAsset {
+    pub source: PathBuf,
+    pub fps: u64,
+    pub loop_: bool,
+    pub display: DisplayMode,
 }
 
 impl Animation {
@@ -273,6 +309,7 @@ pub struct Signal {
     pub threshold: f64,
     pub state_filter: String,
     pub animation: Animation,
+    pub animation_ref: Option<String>,
     pub duration: u64,
     pub sound: Option<PathBuf>,
 }
@@ -287,6 +324,7 @@ pub struct AppConfig {
     pub text_color: (f64, f64, f64, f64),
     pub bg_color: (f64, f64, f64, f64),
     pub signals: Vec<Signal>,
+    pub animations: HashMap<String, AnimAsset>,
     pub border_radius: f64,
     pub gradient: bool,
     pub format: String,
@@ -309,6 +347,7 @@ impl Default for AppConfig {
             text_color: (1.0, 1.0, 1.0, 1.0),
             bg_color: (0.0, 0.0, 0.0, 0.6),
             signals: Vec::new(),
+            animations: HashMap::new(),
             border_radius: 0.0,
             gradient: false,
             format: "{message} {percent}%".to_string(),
@@ -469,8 +508,29 @@ impl AppConfig {
             }
         }
 
-        // Parse signals
+        // Prepare config dir for relative path resolution
         let config_dir = path.parent().map(PathBuf::from);
+
+        // Parse animations
+        for (name, anim_cfg) in file.animations {
+            self.animations.insert(
+                name,
+                AnimAsset {
+                    source: if anim_cfg.source.is_absolute() {
+                        anim_cfg.source
+                    } else if let Some(ref dir) = config_dir {
+                        dir.join(&anim_cfg.source)
+                    } else {
+                        anim_cfg.source
+                    },
+                    fps: anim_cfg.fps.unwrap_or(self.fps),
+                    loop_: anim_cfg.loop_.unwrap_or(true),
+                    display: DisplayMode::parse(anim_cfg.display.as_deref().unwrap_or("anim")),
+                },
+            );
+        }
+
+        // Parse signals
         for sig_cfg in file.signal {
             let color = file
                 .colors
@@ -492,6 +552,20 @@ impl AppConfig {
                 }
             });
 
+            let anim_str = sig_cfg.animation.trim();
+            let (animation, animation_ref) = if self.animations.contains_key(anim_str) {
+                (Animation::None, Some(anim_str.to_string()))
+            } else {
+                let explicit_ref = sig_cfg.animation_ref.as_deref();
+                if let Some(ref_name) = explicit_ref
+                    && self.animations.contains_key(ref_name)
+                {
+                    (Animation::None, Some(ref_name.to_string()))
+                } else {
+                    (parse_animation(anim_str), None)
+                }
+            };
+
             let signal = Signal {
                 message: sig_cfg.message,
                 icon: sig_cfg.icon,
@@ -500,7 +574,8 @@ impl AppConfig {
                 color_name: sig_cfg.color,
                 threshold: sig_cfg.threshold,
                 state_filter: sig_cfg.state.to_lowercase(),
-                animation: parse_animation(&sig_cfg.animation),
+                animation,
+                animation_ref,
                 duration: sig_cfg.duration.unwrap_or(5),
                 sound: sound_path,
             };
@@ -674,6 +749,7 @@ mod tests {
                     animation: Animation::None,
                     duration: 5,
                     sound: None,
+                    animation_ref: None,
                 },
                 Signal {
                     message: "mid".into(),
@@ -686,6 +762,7 @@ mod tests {
                     animation: Animation::None,
                     duration: 5,
                     sound: None,
+                    animation_ref: None,
                 },
                 Signal {
                     message: "high".into(),
@@ -698,6 +775,7 @@ mod tests {
                     animation: Animation::None,
                     duration: 5,
                     sound: None,
+                    animation_ref: None,
                 },
             ],
             ..Default::default()
@@ -724,6 +802,7 @@ mod tests {
                     animation: Animation::None,
                     duration: 5,
                     sound: None,
+                    animation_ref: None,
                 },
                 Signal {
                     message: "low".into(),
@@ -736,6 +815,7 @@ mod tests {
                     animation: Animation::None,
                     duration: 5,
                     sound: None,
+                    animation_ref: None,
                 },
             ],
             ..Default::default()
@@ -760,6 +840,7 @@ mod tests {
                 animation: Animation::None,
                 duration: 5,
                 sound: None,
+                animation_ref: None,
             }],
             ..Default::default()
         };
@@ -820,6 +901,7 @@ mod tests {
                 animation: Animation::None,
                 duration: 5,
                 sound: None,
+                animation_ref: None,
             }],
             ..Default::default()
         };
@@ -841,6 +923,7 @@ mod tests {
                 animation: Animation::None,
                 duration: 0,
                 sound: None,
+                animation_ref: None,
             }],
             ..Default::default()
         };
@@ -862,6 +945,7 @@ mod tests {
                 animation: Animation::None,
                 duration: 5,
                 sound: None,
+                animation_ref: None,
             }],
             fps: 30,
             font_size: 24.0,
@@ -886,6 +970,7 @@ mod tests {
                 animation: Animation::None,
                 duration: 5,
                 sound: None,
+                animation_ref: None,
             }],
             ..Default::default()
         };
@@ -908,6 +993,7 @@ mod tests {
                 animation: Animation::None,
                 duration: 5,
                 sound: None,
+                animation_ref: None,
             }],
             ..Default::default()
         };
@@ -935,6 +1021,7 @@ mod tests {
                 animation: Animation::None,
                 duration: 5,
                 sound: None,
+                animation_ref: None,
             }],
             ..Default::default()
         };
@@ -992,6 +1079,7 @@ mod tests {
                 animation: Animation::None,
                 duration: 5,
                 sound: None,
+                animation_ref: None,
             }],
             ..Default::default()
         };
@@ -1015,6 +1103,7 @@ mod tests {
                 animation: Animation::None,
                 duration: 5,
                 sound: None,
+                animation_ref: None,
             }],
             ..Default::default()
         };
@@ -1045,6 +1134,7 @@ mod tests {
                 animation: Animation::None,
                 duration: 5,
                 sound: None,
+                animation_ref: None,
             }],
             ..Default::default()
         };
@@ -1068,6 +1158,7 @@ mod tests {
                 animation: Animation::None,
                 duration: 5,
                 sound: None,
+                animation_ref: None,
             }],
             ..Default::default()
         };
@@ -1092,6 +1183,7 @@ mod tests {
                 animation: Animation::None,
                 duration: 5,
                 sound: None,
+                animation_ref: None,
             }],
             ..Default::default()
         };
@@ -1148,6 +1240,7 @@ mod tests {
                 animation: Animation::None,
                 duration: 5,
                 sound: None,
+                animation_ref: None,
             }],
             ..Default::default()
         };
@@ -1169,6 +1262,7 @@ mod tests {
                 animation: Animation::None,
                 duration: 5,
                 sound: None,
+                animation_ref: None,
             }],
             ..Default::default()
         };
@@ -1191,10 +1285,94 @@ mod tests {
                 animation: Animation::None,
                 duration: 5,
                 sound: None,
+                animation_ref: None,
             }],
             ..Default::default()
         };
         let (_, warnings) = cfg.validate();
         assert!(warnings.iter().any(|w| w.contains("fps")));
+    }
+
+    #[test]
+    fn test_display_mode_parse() {
+        assert_eq!(DisplayMode::parse("anim"), DisplayMode::Anim);
+        assert_eq!(DisplayMode::parse("Anim"), DisplayMode::Anim);
+        assert_eq!(DisplayMode::parse("text"), DisplayMode::Text);
+        assert_eq!(DisplayMode::parse("Text"), DisplayMode::Text);
+        assert_eq!(DisplayMode::parse("unknown"), DisplayMode::Anim); // default
+        assert_eq!(DisplayMode::parse(""), DisplayMode::Anim); // default
+    }
+
+    #[test]
+    fn test_anim_asset_defaults() {
+        // Simulate what load_toml does with default values
+        let anim = AnimAsset {
+            source: PathBuf::from("/test/frames"),
+            fps: 30,
+            loop_: true,
+            display: DisplayMode::Anim,
+        };
+        assert_eq!(anim.fps, 30);
+        assert!(anim.loop_);
+        assert_eq!(anim.display, DisplayMode::Anim);
+    }
+
+    #[test]
+    fn test_animation_ref_resolution_explicit_ref() {
+        // When animation_ref explicitly names an animation key, it should be used
+        let mut config = AppConfig::default();
+        config.animations.insert("my_anim".to_string(), AnimAsset {
+            source: PathBuf::from("/test"),
+            fps: 30,
+            loop_: true,
+            display: DisplayMode::Text,
+        });
+
+        let signal = Signal {
+            message: "test".into(),
+            icon: "".into(),
+            icon_size: 24.0,
+            color: (1.0, 1.0, 1.0, 1.0),
+            color_name: "white".into(),
+            threshold: 0.0,
+            state_filter: "any".into(),
+            animation: Animation::None,
+            animation_ref: Some("my_anim".into()),
+            duration: 5,
+            sound: None,
+        };
+
+        // animation_ref should point to the animations entry
+        assert!(signal.animation_ref.is_some());
+        assert!(config.animations.contains_key(signal.animation_ref.as_ref().unwrap()));
+    }
+
+    #[test]
+    fn test_animation_ref_none_falls_through_to_procedural() {
+        // When no animation_ref, procedural animation should be used
+        let signal = Signal {
+            message: "test".into(),
+            icon: "".into(),
+            icon_size: 24.0,
+            color: (1.0, 1.0, 1.0, 1.0),
+            color_name: "white".into(),
+            threshold: 0.0,
+            state_filter: "any".into(),
+            animation: Animation::Fade,
+            animation_ref: None,
+            duration: 5,
+            sound: None,
+        };
+
+        assert!(signal.animation_ref.is_none());
+        assert_eq!(signal.animation, Animation::Fade);
+    }
+
+    #[test]
+    fn test_display_mode_is_copy() {
+        // Verify DisplayMode implements Copy (compile-time check via usage)
+        let mode = DisplayMode::Text;
+        let copy = mode; // Copy, not move
+        assert_eq!(mode, copy);
     }
 }

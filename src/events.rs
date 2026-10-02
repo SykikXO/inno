@@ -243,10 +243,8 @@ fn load_events_inner(quiet: bool) -> Vec<EventConfig> {
                                         );
                                     }
                                     events.push(event);
-                                } else {
-                                    if !quiet {
-                                        eprintln!("  Skipped disabled event: {}", event.name);
-                                    }
+                                } else if !quiet {
+                                    eprintln!("  Skipped disabled event: {}", event.name);
                                 }
                             }
                             Err(e) => {

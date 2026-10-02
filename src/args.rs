@@ -15,6 +15,7 @@ pub struct Args {
     pub log_file: Option<PathBuf>,
     pub test_animation: Option<usize>,
     pub test_all_animations: bool,
+    pub test_frame_anim: Option<String>,
 }
 
 const HELP: &str = r#"inno - Wayland notification daemon with configurable DBus events
@@ -29,8 +30,9 @@ OPTIONS:
     --daemon                Run in background (daemon mode)
     -l, --log-file <PATH>   Log output to file (useful with --daemon)
     --no-dbus               Disable DBus control interface
-    --test <number>         Preview specific animation (1-6)
-    --test-animations       Cycle through all animations for testing
+    --test <number>         Preview specific procedural animation (1-6)
+    --test-animations       Cycle through all procedural animations
+    --test-frame <name>     Preview a frame animation from [animations] config
     --check-config          Validate config and exit
 
 CONFIG:
@@ -51,6 +53,7 @@ pub fn parse() -> Args {
     let mut log_file: Option<PathBuf> = None;
     let mut test_animation: Option<usize> = None;
     let mut test_all_animations = false;
+    let mut test_frame_anim: Option<String> = None;
     let mut check_config = false;
 
     let mut i = 1;
@@ -96,6 +99,13 @@ pub fn parse() -> Args {
                 test_all_animations = true;
                 debug_mode = true;
             }
+            "--test-frame" => {
+                i += 1;
+                if i < args.len() {
+                    test_frame_anim = Some(args[i].clone());
+                    debug_mode = true;
+                }
+            }
             "--check-config" => {
                 check_config = true;
             }
@@ -114,7 +124,7 @@ pub fn parse() -> Args {
         test_all_animations = true;
     }
 
-    Args { action, debug_mode, enable_dbus, log_file, test_animation, test_all_animations }
+    Args { action, debug_mode, enable_dbus, log_file, test_animation, test_all_animations, test_frame_anim }
 }
 
 pub fn help_text() -> &'static str {

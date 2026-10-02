@@ -7,6 +7,7 @@ use std::time::Duration;
 use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc;
 
+mod animation;
 mod args;
 mod battery;
 mod config;
@@ -30,7 +31,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
-    let Args { action, debug_mode, enable_dbus, log_file, test_animation, test_all_animations } =
+    let Args { action, debug_mode, enable_dbus, log_file, test_animation, test_all_animations, test_frame_anim } =
         args::parse();
 
     match action {
@@ -167,7 +168,7 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    if !test_all_animations {
+    if !test_all_animations && test_frame_anim.is_none() {
         tokio::spawn(async move {
             if let Err(e) = dbus::run_dbus_listener(tx, event_configs).await {
                 eprintln!("DBus error: {}", e);
@@ -200,8 +201,9 @@ async fn main() -> anyhow::Result<()> {
     let mut current_test_signal: Option<config::Signal> = None;
     let mut test_anim_idx = test_animation.unwrap_or(0);
     let mut test_timer = Box::pin(tokio::time::sleep(Duration::from_secs(0)));
+    let test_frame_anim_name = test_frame_anim.clone();
 
-    if test_all_animations {
+    if test_all_animations || test_frame_anim.is_some() {
         eprintln!("Animation testing mode enabled.");
         state.animating = true;
     }
@@ -240,6 +242,10 @@ async fn main() -> anyhow::Result<()> {
             app.clicked = false;
             state.dismiss_by_click(&mut app);
             hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
+            if test_animation.is_some() || test_frame_anim_name.is_some() {
+                println!("Dismissed test, exiting.");
+                break;
+            }
         }
 
         if let Err(e) = conn.flush() {
@@ -253,6 +259,7 @@ async fn main() -> anyhow::Result<()> {
                 config = AppConfig::load();
                 eprintln!("inno: reloaded {} signals", config.signals.len());
                 app.frame_cache.clear();
+                app.clear_animations();
                 animation_timer = Box::pin(tokio::time::sleep(Duration::from_micros(1_000_000 / config.fps.max(1))));
                 state.on_config_reload();
                 if (config.scale - old_scale).abs() > 0.01 {
@@ -282,6 +289,7 @@ async fn main() -> anyhow::Result<()> {
                         config = AppConfig::load();
                         eprintln!("inno: reloaded {} signals", config.signals.len());
                         app.frame_cache.clear();
+                        app.clear_animations();
                         state.on_config_reload();
                     }
                 }
@@ -304,51 +312,108 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
-            _ = &mut test_timer, if test_all_animations => {
-                let anim = test_animations_list[test_anim_idx];
-                let anim_name = format!("{:?}", anim);
-                eprintln!("Testing animation: {}", anim_name);
+            _ = &mut test_timer, if test_all_animations || test_frame_anim_name.is_some() => {
+                if let Some(ref frame_name) = test_frame_anim_name {
+                    // Frame animation test mode (one-shot)
+                    eprintln!("Testing frame animation: {}", frame_name);
+                    let test_signal = config::Signal {
+                        message: format!("Testing '{}'", frame_name),
+                        icon: "󰚗".to_string(),
+                        icon_size: 24.0,
+                        color: (0.2, 0.8, 0.2, 1.0),
+                        color_name: "".to_string(),
+                        threshold: 0.0,
+                        state_filter: "any".to_string(),
+                        animation: config::Animation::None,
+                        animation_ref: Some(frame_name.clone()),
+                        duration: 30,
+                        sound: None,
+                    };
+                    let text = draw::format_text(
+                        &config.format_template,
+                        &test_signal.icon,
+                        &test_signal.message,
+                        Some(50.0),
+                    );
+                    state.current_text = Some(text.clone());
+                    state.draw_state.reset();
+                    current_test_signal = Some(test_signal);
+                    // Initial draw done via the animation_timer path below
+                    // Reset test timer to fire after a long delay to keep animating
+                    test_timer = Box::pin(tokio::time::sleep(Duration::from_secs(9999)));
+                } else if test_all_animations {
+                    // Existing procedural animation test mode
+                    let anim = test_animations_list[test_anim_idx];
+                    let anim_name = format!("{:?}", anim);
+                    eprintln!("Testing animation: {}", anim_name);
 
-                let test_signal = config::Signal {
-                    message: format!("Testing {}", anim_name),
-                    icon: "󰚗".to_string(),
-                    icon_size: 24.0,
-                    color: (0.2, 0.8, 0.2, 1.0),
-                    color_name: "".to_string(),
-                    threshold: 0.0,
-                    state_filter: "any".to_string(),
-                    animation: anim,
-                    duration: 10,
-                    sound: None,
-                };
+                    let test_signal = config::Signal {
+                        message: format!("Testing {}", anim_name),
+                        icon: "󰚗".to_string(),
+                        icon_size: 24.0,
+                        color: (0.2, 0.8, 0.2, 1.0),
+                        color_name: "".to_string(),
+                        threshold: 0.0,
+                        state_filter: "any".to_string(),
+                        animation: anim,
+                        animation_ref: None,
+                        duration: 10,
+                        sound: None,
+                    };
 
-                let text = draw::format_text(
-                    &config.format_template,
-                    &test_signal.icon,
-                    &test_signal.message,
-                    Some(50.0),
-                );
+                    let text = draw::format_text(
+                        &config.format_template,
+                        &test_signal.icon,
+                        &test_signal.message,
+                        Some(50.0),
+                    );
 
-                state.current_text = Some(text.clone());
-                state.draw_state.reset();
-                app.draw_text_with_signal(&text, &config, Some(&test_signal), &state.draw_state);
-                current_test_signal = Some(test_signal);
-                // Don't set a competing hide_timer in test mode — the test_timer handles cycling.
-                // Setting one here with exact duration kills the fade-out before it completes.
-                hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
+                    state.current_text = Some(text.clone());
+                    state.draw_state.reset();
+                    app.draw_text_with_signal(&text, &config, Some(&test_signal), &state.draw_state);
+                    current_test_signal = Some(test_signal);
+                    // Don't set a competing hide_timer in test mode — the test_timer handles cycling.
+                    // Setting one here with exact duration kills the fade-out before it completes.
+                    hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
 
-                if let Some(fixed_idx) = test_animation {
-                    test_anim_idx = fixed_idx;
-                    test_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
-                } else {
-                    test_anim_idx = (test_anim_idx + 1) % test_animations_list.len();
-                    test_timer = Box::pin(tokio::time::sleep(Duration::from_secs(12)));
+                    if let Some(fixed_idx) = test_animation {
+                        test_anim_idx = fixed_idx;
+                        test_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
+                    } else {
+                        test_anim_idx = (test_anim_idx + 1) % test_animations_list.len();
+                        test_timer = Box::pin(tokio::time::sleep(Duration::from_secs(12)));
+                    }
+                    state.animating = true;
                 }
-                state.animating = true;
             }
 
             _ = &mut animation_timer, if state.animating => {
                 if let Some(text) = &state.current_text {
+                    // Frame animation (test or normal): try tick_and_draw_frame_anim
+                    let frame_anim_drawn = if test_frame_anim_name.is_some() {
+                        // Test-frame mode: use test signal's animation_ref
+                        current_test_signal.as_ref()
+                            .and_then(|sig| sig.animation_ref.as_deref())
+                            .and_then(|key| app.tick_and_draw_frame_anim(key, &config, current_test_signal.as_ref(), text, &state.draw_state))
+                    } else if !test_all_animations {
+                        // Normal runtime: use current signal's animation_ref
+                        state.current_signal_idx
+                            .filter(|&idx| idx < config.signals.len())
+                            .and_then(|idx| {
+                                let signal = &config.signals[idx];
+                                signal.animation_ref.as_deref()
+                                    .and_then(|key| app.tick_and_draw_frame_anim(key, &config, Some(signal), text, &state.draw_state))
+                            })
+                    } else {
+                        None
+                    };
+
+                    if let Some(frame_delay) = frame_anim_drawn {
+                        animation_timer = Box::pin(tokio::time::sleep(frame_delay));
+                        continue;
+                    }
+
+                    // Procedural animation fallback
                     if test_all_animations {
                         if let Some(ref sig) = current_test_signal {
                             let total_frames = sig.duration as f64 * config.fps as f64;
@@ -385,7 +450,7 @@ async fn main() -> anyhow::Result<()> {
                         let delay = state.hide_and_next(&mut app);
                         hide_timer = Box::pin(tokio::time::sleep(delay));
 
-                        if test_animation.is_some() {
+                        if test_animation.is_some() || test_frame_anim_name.is_some() {
                             println!("Specific test completed, exiting.");
                             break;
                         }

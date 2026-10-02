@@ -1,11 +1,15 @@
 # Inno Battery Notification Configuration
 
+[animations]
+cube_charge = { source = "assets/animations/cube_charging", fps = 30, loop = true, display = "text" }
+ripple = { source = "assets/animations/ripple_charge", fps = 30, loop = true, display = "text" }
+
 [general]
 font = "InputMono Nerd Font"
 font_size = 18.0
 font_slant = "normal"    # normal, italic, oblique
 font_weight = "normal"   # normal, bold
-position = "center,bottom,0,-50,0,0"
+position = "center,center,0,0,0,0"
 format = "{message} {percent}%"
 fps = 60
 
@@ -49,8 +53,9 @@ icon_size = 28
 color = "green"
 threshold = 0
 state = "charging"
-animation = "fade"
-duration = 3
+animation = "none"
+animation_ref = "cube_charge"
+duration = 10
 sound = "assets/sounds/hardware_insert.wav"
 
 [[signal]]
