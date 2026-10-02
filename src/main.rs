@@ -149,9 +149,21 @@ async fn main() -> anyhow::Result<()> {
 
         std::thread::spawn(move || {
             let (watcher_tx, watcher_rx) = std::sync::mpsc::channel();
+
+            // Editors save by writing a temp file and renaming over the target,
+            // which emits Create/Rename rather than Modify. Watching the parent
+            // directory and filtering by name catches both, and keeps working
+            // after the original inode is replaced.
+            let file_name = config_path.file_name().map(|n| n.to_os_string());
+            let watch_dir = config_path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .to_path_buf();
+
             let mut watcher = notify::recommended_watcher(move |res: Result<FsEvent, _>| {
                 if let Ok(event) = res
-                    && event.kind.is_modify()
+                    && event.paths.iter().any(|p| p.file_name() == file_name.as_deref())
                 {
                     let _ = watcher_tx.send(());
                 }
@@ -159,10 +171,14 @@ async fn main() -> anyhow::Result<()> {
             .ok();
 
             if let Some(ref mut w) = watcher {
-                let _ = w.watch(&config_path, RecursiveMode::NonRecursive);
+                let _ = w.watch(&watch_dir, RecursiveMode::NonRecursive);
             }
 
             while let Ok(()) = watcher_rx.recv() {
+                // A single save emits several events; coalesce them into one
+                // reload.
+                std::thread::sleep(Duration::from_millis(100));
+                while watcher_rx.try_recv().is_ok() {}
                 let _ = config_tx.blocking_send(());
             }
         });
@@ -455,6 +471,10 @@ async fn main() -> anyhow::Result<()> {
                             break;
                         }
                     }
+                } else {
+                    // Nothing to hide. The completed Sleep is Ready forever, so
+                    // re-arm it or this branch spins the loop at 100% CPU.
+                    hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
                 }
             }
 

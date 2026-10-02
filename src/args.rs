@@ -44,55 +44,53 @@ DBUS CONTROL:
     busctl --user call org.inno.Control /org/inno/Control org.inno.Control Hide
 "#;
 
-pub fn parse() -> Args {
-    let args: Vec<String> = std::env::args().collect();
+/// Reads the value that follows a flag, refusing to swallow the next flag.
+fn value_after(args: &[String], flag_idx: usize) -> Option<String> {
+    let next = args.get(flag_idx + 1)?;
+    (!next.starts_with('-')).then(|| next.clone())
+}
 
-    let mut action: Option<Action> = None;
+pub fn parse() -> Args {
+    parse_from(std::env::args())
+}
+
+pub fn parse_from<I: IntoIterator<Item = String>>(args: I) -> Args {
+    let args: Vec<String> = args.into_iter().collect();
+
+    let mut help = false;
+    let mut version = false;
+    let mut check_config = false;
+    let mut daemon = false;
+    let mut internal_daemon = false;
     let mut debug_mode = false;
     let mut enable_dbus = true;
     let mut log_file: Option<PathBuf> = None;
     let mut test_animation: Option<usize> = None;
     let mut test_all_animations = false;
     let mut test_frame_anim: Option<String> = None;
-    let mut check_config = false;
 
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "-h" | "--help" => {
-                action = Some(Action::Help);
-                break;
-            }
-            "-v" | "--version" => {
-                action = Some(Action::Version);
-                break;
-            }
-            "-d" | "--debug" => {
-                debug_mode = true;
-            }
-            "--daemon" => {
-                action = Some(Action::Daemon);
-            }
-            "--internal-daemon" => {
-                action = Some(Action::InternalDaemon);
-            }
-            "-l" | "--log-file" => {
-                i += 1;
-                if i < args.len() {
-                    log_file = Some(PathBuf::from(&args[i]));
-                }
-            }
-            "--no-dbus" => {
-                enable_dbus = false;
-            }
+            "-h" | "--help" => help = true,
+            "-v" | "--version" => version = true,
+            "-d" | "--debug" => debug_mode = true,
+            "--daemon" => daemon = true,
+            "--internal-daemon" => internal_daemon = true,
+            "-l" | "--log-file" => log_file = value_after(&args, i).map(PathBuf::from),
+            "--no-dbus" => enable_dbus = false,
             "--test" => {
-                i += 1;
-                if i < args.len()
-                    && let Ok(idx) = args[i].parse::<usize>()
+                if let Some(value) = value_after(&args, i)
+                    && let Ok(idx) = value.parse::<usize>()
                     && (1..=6).contains(&idx)
                 {
                     test_animation = Some(idx - 1);
                     debug_mode = true;
+                }
+                // Skip the value slot when it parsed as something other than a
+                // number, otherwise `--test abc --debug` still sees --debug.
+                if args.get(i + 1).is_some_and(|v| !v.starts_with('-')) {
+                    i += 1;
                 }
             }
             "--test-animations" => {
@@ -100,28 +98,44 @@ pub fn parse() -> Args {
                 debug_mode = true;
             }
             "--test-frame" => {
-                i += 1;
-                if i < args.len() {
-                    test_frame_anim = Some(args[i].clone());
+                if let Some(value) = value_after(&args, i) {
+                    test_frame_anim = Some(value);
                     debug_mode = true;
                 }
+                if args.get(i + 1).is_some_and(|v| !v.starts_with('-')) {
+                    i += 1;
+                }
             }
-            "--check-config" => {
-                check_config = true;
-            }
+            "--check-config" => check_config = true,
             _ => {}
         }
         i += 1;
     }
 
-    let action = if check_config {
+    // Resolved after the loop so precedence does not depend on argument order.
+    // --internal-daemon beats --daemon so re-spawning cannot fork-bomb.
+    let action = if help {
+        Action::Help
+    } else if version {
+        Action::Version
+    } else if check_config {
         Action::CheckConfig
+    } else if internal_daemon {
+        Action::InternalDaemon
+    } else if daemon {
+        Action::Daemon
     } else {
-        action.unwrap_or(Action::InternalDaemon)
+        Action::InternalDaemon
     };
 
     if test_animation.is_some() {
         test_all_animations = true;
+    }
+
+    // A frame preview and the procedural cycle are mutually exclusive; letting
+    // both stand would silently disable the cycle.
+    if test_frame_anim.is_some() {
+        test_all_animations = false;
     }
 
     Args { action, debug_mode, enable_dbus, log_file, test_animation, test_all_animations, test_frame_anim }

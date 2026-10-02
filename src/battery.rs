@@ -10,36 +10,42 @@ pub fn aggregate_battery_state(
         return (100.0, "unknown".to_string());
     }
 
+    // devices is a HashMap, so iteration order is arbitrary. Sort by device
+    // name so `first` and the combined-mode tie-break are reproducible.
+    let mut names: Vec<&String> = devices.keys().collect();
+    names.sort();
+    let ordered: Vec<&(f64, String)> = names.iter().map(|name| &devices[*name]).collect();
+
+    // A NaN percentage comes from a malformed UPower payload. Dropping it beats
+    // letting it win an ordering comparison via partial_cmp returning None.
+    let usable: Vec<&(f64, String)> =
+        ordered.iter().copied().filter(|(pct, _)| !pct.is_nan()).collect();
+    let pick = if usable.is_empty() { &ordered } else { &usable };
+
     match mode {
         config::BatteryMode::First => {
-            let (_, (pct, state)) = devices.iter().next().unwrap();
+            let (pct, state) = pick[0];
             (*pct, state.clone())
         }
         config::BatteryMode::Highest => {
-            let (pct, state) = devices
-                .values()
-                .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
-                .unwrap();
+            let (pct, state) = pick.iter().max_by(|a, b| a.0.total_cmp(&b.0)).unwrap();
             (*pct, state.clone())
         }
         config::BatteryMode::Lowest => {
-            let (pct, state) = devices
-                .values()
-                .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
-                .unwrap();
+            let (pct, state) = pick.iter().min_by(|a, b| a.0.total_cmp(&b.0)).unwrap();
             (*pct, state.clone())
         }
         config::BatteryMode::Combined => {
-            let sum: f64 = devices.values().map(|(pct, _)| pct).sum();
-            let avg = sum / devices.len() as f64;
-            let any_charging = devices.values().any(|(_, s)| s == "charging");
-            let any_discharging = devices.values().any(|(_, s)| s == "discharging");
+            let sum: f64 = pick.iter().map(|(pct, _)| pct).sum();
+            let avg = sum / pick.len() as f64;
+            let any_charging = pick.iter().any(|(_, s)| s == "charging");
+            let any_discharging = pick.iter().any(|(_, s)| s == "discharging");
             let state = if any_charging {
                 "charging".to_string()
             } else if any_discharging {
                 "discharging".to_string()
             } else {
-                devices.values().next().unwrap().1.clone()
+                pick[0].1.clone()
             };
             (avg, state)
         }
