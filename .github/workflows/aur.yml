@@ -98,9 +98,16 @@ jobs:
           VERSION: ${{ steps.version.outputs.value }}
         run: |
           set -euo pipefail
-          tarball="inno-${VERSION}.tar.gz"
-          curl -fsSL --max-time 60 "https://github.com/${{ github.repository }}/archive/refs/tags/v${VERSION}.tar.gz" -o "$tarball"
-          sum="sha256:$(sha256sum "$tarball" | cut -d' ' -f1)"
+
+          # The tag has to exist before anything is published, and it is what the
+          # PKGBUILD's VCS source points at. There is deliberately no checksum
+          # here: GitHub's archive tarballs are generated per request and are not
+          # byte-reproducible, so pinning a hash on one produces a package that
+          # builds locally and fails on AUR. git verifies the tag instead.
+          if ! git ls-remote --exit-code --tags "https://github.com/${{ github.repository }}" "refs/tags/v${VERSION}" >/dev/null 2>&1; then
+            echo "::error::tag v${VERSION} does not exist on the remote"
+            exit 1
+          fi
 
           # pkgrel resets on a new pkgver and increments when the same version is
           # republished, which is the PKGBUILD-only-fix case. Read from the AUR
@@ -133,12 +140,10 @@ jobs:
           sed -i \
             -e "s/^pkgver=.*/pkgver=${VERSION}/" \
             -e "s/^pkgrel=.*/pkgrel=${pkgrel}/" \
-            -e "s|^sha256sums=.*|sha256sums=('${sum}')|" \
             PKGBUILD
 
           echo "AUR currently has: ${published:-nothing}"
           echo "publishing:        ${VERSION}-${pkgrel}"
-          echo "source checksum:   ${sum}"
           # Informational only, so it must not be the last command deciding
           # whether the step passed.
           git --no-pager diff -- PKGBUILD || true
