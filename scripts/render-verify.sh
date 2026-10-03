@@ -352,10 +352,13 @@ write_config() {
 [general]
 font = "InputMono Nerd Font"
 font_size = 16
-position = "center,center,0,0,0,0"
 format = "{message}"
 fps = 10
 scale = 0.5
+
+[position]
+anchor = "center"
+margin = 0
 
 [appearance]
 bg_color = [0.0, 0.0, 0.0, 0.0]

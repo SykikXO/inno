@@ -141,7 +141,7 @@ background, and a 90px bottom margin.
 | | `font_size` | `24.0` | Font size in points |
 | | `font_slant` | `normal` | `normal`, `italic`, or `oblique` |
 | | `font_weight` | `normal` | `normal` or `bold` |
-| | `position` | `center,bottom,0,0,0,0` | Anchor and margins (see below) |
+| | `position` | see `[position]` | Deprecated six-field string; use the `[position]` table (see below) |
 | | `format` | `{message} {percent}%` | Text template |
 | | `fps` | `30` | Frame rate for procedural transitions. Frame animations use their own `fps` |
 | | `scale` | `1.0` | Display scale multiplier. Minimum `0.1` |
@@ -190,33 +190,80 @@ than allowed to win a comparison.
 
 ### Position Format
 
-Six comma-separated parts:
+A `[position]` table. `anchor` says which edge or corner to sit against,
+`margin` says how far from it.
 
-```
-horizontal, vertical, margin_h, margin_v, offset_x, offset_y
+```toml
+[position]
+anchor = "bottom-center"
+margin = 90
 ```
 
-| Part | Values | Default |
-|------|--------|---------|
-| `horizontal` | `left`, `center`, `right` | `center` |
-| `vertical` | `top`, `center`, `bottom` | `bottom` |
-| `margin_h` | pixels | `10` |
-| `margin_v` | pixels (defaults to `margin_h`) | `margin_h` |
-| `offset_x` | pixels | `0` |
-| `offset_y` | pixels | `0` |
+| Key | Values | Default |
+|-----|--------|---------|
+| `anchor` | `top`, `center`, `bottom` and `left`, `center`, `right`, combined freely | `bottom-center` |
+| `margin` | pixels from every anchored edge | `10` |
+| `margin_top` | pixels, overrides `margin` on that edge | `margin` |
+| `margin_bottom` | pixels, overrides `margin` on that edge | `margin` |
+| `margin_left` | pixels, overrides `margin` on that edge | `margin` |
+| `margin_right` | pixels, overrides `margin` on that edge | `margin` |
+
+Anchor words are order-independent, so `bottom-center`, `center-bottom` and
+`bottom centre` are the same placement. A single word anchors that edge and
+centres the other axis, so `top` means `top-center`.
 
 Examples:
 
-- `"center,bottom,0,90,0,0"` — bottom centre, 90px up from the bottom edge
-- `"center,bottom,0,10,0,0"` — bottom centre, 10px up
-- `"right,top,20,30"` — top right, 20px horizontal and 30px vertical margin
-- `"center,center,0,0,0,0"` — dead centre
+```toml
+[position]
+anchor = "bottom-center"
+margin = 90
+```
 
-`margin` is the gap from the anchored edge. `offset` then moves the result
-further, so a negative `offset_y` on a `bottom` anchor pushes it further up.
+```toml
+# Top right, closer to the top than the side.
+[position]
+anchor = "top-right"
+margin = 20
+margin_top = 40
+```
 
-Changing `position` takes effect on the next notification for a running daemon
-only after a restart. Margin and `scale` changes do apply on reload.
+```toml
+# Bottom left, inset from both edges.
+[position]
+anchor = "bottom-left"
+margin = 40
+margin_left = 120
+```
+
+### Margins and anchors
+
+The compositor centres an axis that has no anchor, and ignores the margin on
+it. That is why `margin_left` on a `bottom-center` anchor does nothing: there
+is no left edge to measure from. Anchor a side or corner to use side margins.
+Setting one explicitly when the axis is centred prints a warning rather than
+leaving you to guess.
+
+An unrecognised anchor is an error, not a fallback. The old format silently
+treated an unknown word as `bottom`, which meant a typo could put a
+notification on the opposite edge of the screen with nothing printed.
+
+Changing `anchor` takes effect on the next notification; `margin` and `scale`
+also apply on reload.
+
+### Deprecated position string
+
+The old form still works and maps onto exactly the same geometry:
+
+```toml
+[general]
+position = "horizontal,vertical,margin_h,margin_v,offset_x,offset_y"
+```
+
+It prints a pointer to the table on every load. The offsets are the reason the
+table exists: a margin on an unanchored axis is ignored, so the old format
+needed a second way to express the same distance. Setting both forms is an
+error.
 
 ### Animations
 

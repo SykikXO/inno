@@ -50,13 +50,16 @@ font = "InputMono Nerd Font"
 font_size = 18.0
 font_slant = "normal"    # normal, italic, oblique
 font_weight = "normal"   # normal, bold
-# horizontal, vertical, margin_h, margin_v, offset_x, offset_y
-# Bottom edge of the notification, 90px up from the bottom of the screen.
-position = "center,bottom,0,90,0,0"
 format = "{message} {percent}%"
 # Frame rate for procedural transitions. Frame animations use their own fps.
 fps = 60
 # sound = false          # same as --no-sound
+
+# Where the notification sits, and how far from the anchored edge. See the
+# README for the anchor vocabulary and per-edge overrides.
+[position]
+anchor = "bottom-center"
+margin = 90
 
 [appearance]
 text_color = [1.0, 1.0, 1.0, 1.0]
