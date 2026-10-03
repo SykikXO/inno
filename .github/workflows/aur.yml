@@ -105,8 +105,23 @@ jobs:
           # pkgrel resets on a new pkgver and increments when the same version is
           # republished, which is the PKGBUILD-only-fix case. Read from the AUR
           # RPC so a rerun does not silently reuse a pkgrel that is already taken.
-          published=$(curl -fsSL --max-time 30 "https://aur.archlinux.org/rpc/v5/info?arg[]=inno" \
-            | sed -n 's/.*"Version":"\([^"]*\)".*/\1/p')
+          #
+          # AUR's RPC intermittently answers 502 and drops TLS, and this is the
+          # only reason the step talks to AUR at all. One unlucky read should not
+          # fail a publish, so it is retried; if it never answers, the step says
+          # so rather than guessing a pkgrel and letting AUR reject the push
+          # with a less useful message.
+          published=""
+          for attempt in 1 2 3 4 5; do
+            published=$(curl -fsSL --max-time 20 "https://aur.archlinux.org/rpc/v5/info?arg[]=inno" \
+              | sed -n 's/.*"Version":"\([^"]*\)".*/\1/p') && [ -n "$published" ] && break
+            echo "AUR RPC attempt $attempt did not answer, retrying"
+            sleep $((attempt * 5))
+          done
+          if [ -z "$published" ]; then
+            echo "::error::could not read the current version from the AUR RPC after 5 attempts, so pkgrel cannot be chosen safely"
+            exit 1
+          fi
           pv=${published%%-*}
           rel=${published##*-}
           if [ "$pv" = "$VERSION" ]; then
