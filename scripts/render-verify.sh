@@ -53,13 +53,13 @@ shot() { timeout 15 env WAYLAND_DISPLAY="$DISPLAY" XDG_RUNTIME_DIR="$RUNTIME" \
 surface_stats() {
     python3 - "$1" <<'PY'
 import sys
-from collections import Counter
 from PIL import Image
 im = Image.open(sys.argv[1]).convert("RGB")
-counts = Counter(im.getdata())
-bg, n = counts.most_common(1)[0]
-odd = im.width * im.height - n
-print(f"{len(counts)} {odd}")
+# getcolors is about three times faster than a Counter over every pixel, and
+# this runs against a full-screen surface.
+colors = im.getcolors(1 << 24)  # each entry is (count, colour)
+n = max(colors, key=lambda c: c[0])[0]
+print(f"{len(colors)} {im.width * im.height - n}")
 PY
 }
 
@@ -71,7 +71,7 @@ from PIL import Image, ImageChops
 a = Image.open(sys.argv[1]).convert("RGB")
 b = Image.open(sys.argv[2]).convert("RGB")
 d = ImageChops.difference(a, b).convert("L").point(lambda v: 255 if v > 12 else 0)
-print(sum(1 for p in d.getdata() if p))
+print(d.histogram()[255])
 PY
 }
 
@@ -88,7 +88,9 @@ if a.size != b.size:
     sys.exit()
 m = ImageChops.difference(a, b).convert("L").point(lambda v: 255 if v > 12 else 0)
 box = m.getbbox()
-n = sum(1 for p in m.getdata() if p)
+# The mask is strictly 0 or 255, so its histogram counts the drawn pixels
+# without walking two million of them in Python. getdata() is removed in Pillow 14.
+n = m.histogram()[255]
 print(f"drawn={n} box={box}" + (f" size={box[2]-box[0]}x{box[3]-box[1]}" if box else ""))
 PY
 }
@@ -178,15 +180,22 @@ require_clean_surface() {
         shot "$WORK/probe-a.png" || fail "capture failed on $DISPLAY"
         sleep 1
         shot "$WORK/probe-b.png" || fail "capture failed on $DISPLAY"
-        read -r colours odd < <(surface_stats "$WORK/probe-a.png")
-        say "surface: $colours distinct colours, $odd non-background px, moved=$(frame_delta "$WORK/probe-a.png" "$WORK/probe-b.png")"
+        local stats
+        stats=$(surface_stats "$WORK/probe-a.png") || fail "could not measure the surface: $WORK/hyprland.log"
+        case $stats in
+            *" "*) read -r colours odd <<<"$stats" ;;
+            *) fail "surface_stats printed no numbers, got '$stats'" ;;
+        esac
+        local moved
+        moved=$(frame_delta "$WORK/probe-a.png" "$WORK/probe-b.png")
+        say "surface: $colours distinct colours, $odd non-background px, moved=$moved"
         # A blank surface is a couple of shades of one colour. An error overlay or
         # any client would push this well past.
         if [ "$colours" -gt 8 ] || [ "$odd" -gt 2000 ]; then
             say "surface not clean yet, waiting"
             continue
         fi
-        if [ "$(frame_delta "$WORK/probe-a.png" "$WORK/probe-b.png")" != "0" ]; then
+        if [ "$moved" != "0" ]; then
             say "surface still animating, waiting"
             continue
         fi
@@ -328,11 +337,7 @@ PY
 }
 
 set_scale() {
-    python3 - "$CFG" "$1" <<'PY'
-import pathlib, re, sys
-p = pathlib.Path(sys.argv[1]) / "inno.toml"
-p.write_text(re.sub(r'^scale = .*$', f"scale = {sys.argv[2]}", p.read_text(), flags=re.M))
-PY
+    sed -i "s/^scale = .*/scale = $1/" "$CFG/inno.toml"
 }
 
 # --- test config -----------------------------------------------------------
@@ -368,74 +373,31 @@ ripple  = { source = "assets/animations/ripple",  fps = 10, loop = true, display
 timing30 = { source = "assets/animations/ripple",  fps = 30, loop = true, display = "anim" }
 timing60 = { source = "assets/animations/ripple",  fps = 60, loop = true, display = "anim" }
 
-[[signal]]
-message = "SCALETEST"
-icon = ""
-color = "white"
-threshold = 0
-state = "any"
-animation_ref = "dot"
-# An explicit duration is needed on the single-frame assets: with none set, the
-# display time is derived from the animation's own length, and one frame at 10fps
-# is 0.1s, which is gone before the first capture.
-duration = 30
-
-[[signal]]
-message = "FADEONLY"
-icon = ""
-color = "white"
-threshold = 0
-state = "any"
-animation = "fade"
-animation_ref = "dot"
-duration = 8
-
-[[signal]]
-message = "SLIDEMOVE"
-icon = ""
-color = "white"
-threshold = 0
-state = "any"
-animation = "slide_right"
-animation_ref = "dot"
-duration = 8
-
-[[signal]]
-message = "TEXTMODE"
-icon = ""
-color = "white"
-threshold = 0
-state = "any"
-animation_ref = "dottext"
-duration = 30
-
-[[signal]]
-message = "RELOOP"
-icon = ""
-color = "white"
-threshold = 0
-state = "any"
-animation_ref = "ripple"
-duration = 60
-
-[[signal]]
-message = "TIMING30"
-icon = ""
-color = "white"
-threshold = 0
-state = "any"
-animation_ref = "timing30"
-duration = 30
-
-[[signal]]
-message = "TIMING60"
-icon = ""
-color = "white"
-threshold = 0
-state = "any"
-animation_ref = "timing60"
-duration = 30
 EOF
+
+    # One row per preview signal: message, procedural transition, frame
+    # animation, seconds on screen. The seven lines every block shared are
+    # written once here instead of fifty times across seven signals.
+    while read -r msg anim ref secs; do
+        [ "${msg#message}" != "$msg" ] && continue
+        {
+            printf '[[signal]]\nmessage = "%s"\nicon = ""\ncolor = "white"\nthreshold = 0\nstate = "any"\n' "$msg"
+            [ "$anim" = '""' ] || printf 'animation = "%s"\n' "$anim"
+            # An explicit duration is needed on the single-frame assets: with
+            # none set, the display time is derived from the animation's own
+            # length, and one frame at 10fps is 0.1s, gone before the first capture.
+            printf 'animation_ref = "%s"\nduration = %s\n\n' "$ref" "$secs"
+        } >> "$CFG/inno.toml"
+    done <<'SIGNALS'
+message       animation     frame     secs
+SCALETEST     ""            dot        30
+FADEONLY      fade          dot        8
+SLIDEMOVE     slide_right   dot        8
+TEXTMODE      ""            dottext    30
+RELOOP        ""            ripple     60
+TIMING30      ""            timing30   30
+TIMING60      ""            timing60   30
+SIGNALS
 }
 
 # --- main ------------------------------------------------------------------
