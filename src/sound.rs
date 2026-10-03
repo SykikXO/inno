@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
@@ -105,7 +106,7 @@ pub struct SoundWorker {
     /// be waited on: dropping a `Child` does not reap it, which leaves a zombie
     /// for every sound played until the daemon exits. More than one can be live
     /// at a time, because the previous one may not have exited yet.
-    pending: Vec<(PathBuf, Child)>,
+    pending: VecDeque<(PathBuf, Child)>,
     /// Errors already reported, so a broken sound file does not print once per
     /// notification.
     reported: std::collections::HashSet<String>,
@@ -125,7 +126,7 @@ impl SoundWorker {
     pub fn disabled() -> Self {
         Self {
             backend: None,
-            pending: Vec::new(),
+            pending: VecDeque::new(),
             reported: std::collections::HashSet::new(),
         }
     }
@@ -137,11 +138,11 @@ impl SoundWorker {
 
         let mut failures = Vec::new();
         for backend in Backend::CHAIN {
-            match Self::try_backend(backend) {
+            match Self::probe_into(backend, &probe_dir()) {
                 Ok(()) => {
                     return Self {
                         backend: Some(backend),
-                        pending: Vec::new(),
+                        pending: VecDeque::new(),
                         reported: std::collections::HashSet::new(),
                     };
                 }
@@ -165,10 +166,6 @@ impl SoundWorker {
     /// Bounded by a timeout. A player that starts and then hangs would otherwise
     /// stop the daemon from ever reaching its DBus listener or layer surface,
     /// which is the outcome this whole fallback exists to avoid.
-    fn try_backend(backend: Backend) -> Result<(), ProbeError> {
-        Self::probe_into(backend, &probe_dir())
-    }
-
     /// Probes using `dir` as the scratch directory, and removes it afterwards.
     /// Split out from `try_backend` so a test can hand it a directory it owns
     /// rather than racing other probes over one shared path.
@@ -268,7 +265,7 @@ impl SoundWorker {
         self.reap();
 
         match backend.command(path).spawn() {
-            Ok(child) => self.pending.push((path.to_path_buf(), child)),
+            Ok(child) => self.pending.push_back((path.to_path_buf(), child)),
             Err(e) => self.report_once(path, &e.to_string()),
         }
 
@@ -277,7 +274,7 @@ impl SoundWorker {
         // the length of one sound. Dropping the handle instead would trade a
         // bounded stall for an unbounded zombie leak, which is worse.
         while self.pending.len() > MAX_CONCURRENT_PLAYERS {
-            let (_, mut oldest) = self.pending.remove(0);
+            let (_, mut oldest) = self.pending.pop_front().expect("length checked above");
             let _ = oldest.wait();
         }
     }
@@ -286,29 +283,31 @@ impl SoundWorker {
     /// succeeding only means fork and exec worked: the child can still fail
     /// afterwards, and this is the only place that becomes visible.
     fn reap(&mut self) {
-        let mut still_running = Vec::with_capacity(self.pending.len());
-        for (path, mut child) in std::mem::take(&mut self.pending) {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    if !status.success() {
-                        self.report_once(&path, &format!("player exited with {status}"));
-                    }
+        // Retained in place rather than drained into a fresh Vec, which cost a
+        // heap allocation on every notification to hold at most eight handles.
+        let mut failures = Vec::new();
+        self.pending.retain_mut(|(path, child)| match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    failures.push((path.clone(), format!("player exited with {status}")));
                 }
-                // Still running: keep the handle so it can be reaped later.
-                Ok(None) => still_running.push((path, child)),
-                // Keep the handle even on error rather than dropping it, since
-                // dropping is exactly what leaves a zombie.
-                Err(_) => still_running.push((path, child)),
+                false
             }
+            // Still running, or a wait that failed: keep the handle either way,
+            // since dropping it is exactly what leaves a zombie.
+            Ok(None) | Err(_) => true,
+        });
+        for (path, reason) in failures {
+            self.report_once(&path, &reason);
         }
-        self.pending = still_running;
     }
 
-    /// Reports a distinct failure once. Without this a broken sound file prints
-    /// on every notification.
+    /// Reports a failure once per sound file. Without this a broken sound file
+    /// prints on every notification. Keyed on the path alone: keying on the
+    /// reason as well let a player failing with many distinct statuses grow this
+    /// set without bound for the life of the daemon.
     fn report_once(&mut self, path: &Path, reason: &str) {
-        let key = format!("{}: {reason}", path.display());
-        if self.reported.insert(key) {
+        if self.reported.insert(path.display().to_string()) {
             eprintln!("Sound: {}: {}", path.display(), reason);
         }
     }
@@ -409,7 +408,7 @@ mod tests {
     fn test_missing_file_is_reported_once_not_every_event() {
         let mut worker = SoundWorker {
             backend: Some(Backend::Paplay),
-            pending: Vec::new(),
+            pending: VecDeque::new(),
             reported: std::collections::HashSet::new(),
         };
         let missing = PathBuf::from("/nonexistent/definitely-not-here.wav");
