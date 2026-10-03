@@ -226,11 +226,43 @@ pub fn format_text(fmt: &str, icon: &str, message: &str, percent: Option<f64>) -
         Some(p) => (format!("{p:.0}"), format!("{p:.0}%")),
         None => (String::new(), String::new()),
     };
-    let mut out = fmt
-        .replace("{percent}%", &pct_suffixed)
-        .replace("{percent}", &pct)
-        .replace("{icon}", icon)
-        .replace("{message}", message);
+    // One left-to-right pass rather than a chain of replaces, so a substituted
+    // value is never rescanned by a later placeholder. Chaining made an icon
+    // containing "{message}" expand, because {message} was substituted after it.
+    // `{percent}%` is matched before `{percent}` so the suffixed form wins, and
+    // anything else is left exactly as written.
+    let mut out = String::with_capacity(fmt.len());
+    let mut rest = fmt;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let Some(close) = rest[open..].find('}') else {
+            out.push_str(&rest[open..]);
+            return finish(out);
+        };
+        let token = &rest[open + 1..open + close];
+        let after = &rest[open + close + 1..];
+        // `{percent}%` is one token, and with no reading it renders as nothing
+        // rather than as a bare `%`.
+        if token == "percent" && after.starts_with('%') {
+            out.push_str(&pct_suffixed);
+            rest = &after[1..];
+            continue;
+        }
+        match token {
+            "percent" => out.push_str(&pct),
+            "icon" => out.push_str(icon),
+            "message" => out.push_str(message),
+            _ => out.push_str(&rest[open..open + close + 1]),
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    finish(out)
+}
+
+/// Trims the space a missing `{percent}` leaves behind, so `{message}
+/// {percent}%` degrades to `{message}` rather than `{message} %`.
+fn finish(mut out: String) -> String {
     while out.ends_with(' ') {
         out.pop();
     }

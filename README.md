@@ -589,6 +589,11 @@ drops into a package build or a pre-commit hook.
 - Only `inno.toml` is watched for changes. A new or edited file under
   `events/` is picked up on the next start, or after a `Reload` over the
   control interface.
+- `--debug` is accepted and ignored. It only ever printed one startup line, so
+  it never did what its old help text claimed. It stays parseable so that an
+  autostart line or a systemd unit carrying it keeps working across an upgrade
+  rather than becoming a restart loop with `Restart=on-failure`. Diagnostics go
+  to stderr already, or to a file with `--log-file`.
 - An animation-only notification (`display = "anim"`) is sized from the frame's
   natural dimensions, so on a high-DPI output it renders softer than the text
   card beside it rather than decoding larger and using the memory.

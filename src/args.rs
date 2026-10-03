@@ -48,6 +48,14 @@ struct Cli {
     #[arg(short = 'v', long, action = clap::ArgAction::Version)]
     version: Option<bool>,
 
+    /// Accepted and ignored. It only ever printed one line, so it never did
+    /// what it said. It stays parseable because a daemon autostarted by a
+    /// systemd unit with `Restart=on-failure` would otherwise turn the upgrade
+    /// into a three-second restart loop with no notifications at all. Drop it
+    /// from your unit; diagnostics already go to stderr, or to --log-file.
+    #[arg(short = 'd', long = "debug", hide = true)]
+    deprecated_debug: bool,
+
     /// Run in background (daemon mode)
     #[arg(long)]
     daemon: bool,
@@ -274,6 +282,16 @@ mod tests {
         let parsed = parse_from(argv(&["--no-sound"]));
         assert!(parsed.no_sound);
         assert!(parsed.enable_dbus, "--no-sound must not disable dbus");
+    }
+
+    #[test]
+    fn test_debug_is_still_accepted_so_an_autostart_line_cannot_break() {
+        // An autostart line with --debug must not become a hard failure on
+        // upgrade: a systemd unit with Restart=on-failure would then restart
+        // every three seconds and show nothing.
+        let parsed = try_parse(&["--debug", "--daemon"]).expect("--debug must still parse");
+        assert!(matches!(parsed.action, Action::Daemon));
+        assert!(try_parse(&["-d"]).expect("-d must still parse").enable_dbus);
     }
 
     #[test]
