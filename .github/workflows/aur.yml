@@ -168,8 +168,26 @@ jobs:
           # The agent is started here rather than in an earlier step because its
           # socket does not survive between steps, and the push below needs it.
           eval "$(ssh-agent -s)"
-          timeout 60 ssh-add ~/.ssh/aur
+          # A wrong passphrase makes ssh-add retry the askpass helper silently
+          # until it is killed, so without a timeout this burns the whole job
+          # timeout and says nothing. With one it fails in 30 seconds and says
+          # what to check.
+          if ! timeout 30 ssh-add ~/.ssh/aur; then
+            echo "::error::could not unlock the AUR key. Either AUR_SSH_PASSPHRASE does not match AUR_SSH_KEY, or AUR_SSH_KEY is not the key registered on the AUR account."
+            exit 1
+          fi
           ssh-add -l
+
+          # Only ever push with the key that is registered on the AUR account.
+          # This also catches AUR_SSH_KEY having been set to some other key,
+          # which would otherwise show up only as an AUR permission error.
+          expected="SHA256:OSlaDFCaio3RmFkvQ3YGyWYGzhrdgzpUlCpJHhFjoUQ"
+          got=$(ssh-add -l | awk 'NR==1 {print $2}')
+          if [ "$got" != "$expected" ]; then
+            echo "::error::AUR_SSH_KEY is $got, expected $expected"
+            exit 1
+          fi
+          echo "authenticated as $got"
 
           # Proves the key authenticates to AUR before anything is committed.
           # accept-new pins the host key on first use rather than trusting
