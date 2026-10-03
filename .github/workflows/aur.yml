@@ -143,15 +143,32 @@ jobs:
         run: |
           set -euo pipefail
           install -d -m 700 ~/.ssh
-          printf '%s\n' "$AUR_SSH_KEY" > ~/.ssh/aur
+          # `%s\n` rather than `%s`, because a key without its final newline is
+          # rejected as an invalid format. The sed collapses a key that was
+          # pasted as one line with literal \n, which is how a secret usually
+          # arrives mangled.
+          printf '%s\n' "$AUR_SSH_KEY" | sed 's/\\n/\n/g' > ~/.ssh/aur
           chmod 600 ~/.ssh/aur
 
-          # ssh-agent is started here rather than in an earlier step because the
-          # agent's socket does not survive between steps, and the push below
-          # needs it.
+          # A passphrase-protected key needs an askpass helper. This OpenSSH does
+          # not read the passphrase from stdin, it goes straight to SSH_ASKPASS
+          # and fails when there is none, so piping it in is not enough. The
+          # helper reads it from the environment, so it holds no secret and the
+          # passphrase never reaches a command line.
+          #
+          # timeout is not decoration: a wrong passphrase retries the askpass
+          # helper forever otherwise, and the step would burn the whole job
+          # timeout instead of failing.
+          ask=$(mktemp)
+          trap 'rm -f "$ask"; ssh-agent -k >/dev/null' EXIT
+          printf '#!/bin/sh\nprintf "%%s\\n" "$AUR_SSH_PASSPHRASE"\n' > "$ask"
+          chmod 700 "$ask"
+          export SSH_ASKPASS="$ask" SSH_ASKPASS_REQUIRE=force DISPLAY=:0
+
+          # The agent is started here rather than in an earlier step because its
+          # socket does not survive between steps, and the push below needs it.
           eval "$(ssh-agent -s)"
-          trap 'ssh-agent -k' EXIT
-          printf '%s\n' "$AUR_SSH_PASSPHRASE" | ssh-add - ~/.ssh/aur
+          timeout 60 ssh-add ~/.ssh/aur
           ssh-add -l
 
           # Proves the key authenticates to AUR before anything is committed.
