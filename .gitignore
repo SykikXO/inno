@@ -28,3 +28,6 @@ PLAN.md
 
 # Audit trail for long autonomous runs
 .audit/
+
+# Local agent/plan scratch
+.opencode/
