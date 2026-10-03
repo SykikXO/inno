@@ -156,6 +156,9 @@ jobs:
       - name: Push to AUR
         if: ${{ github.event_name == 'push' || !inputs.dry_run }}
         env:
+          # The commit message quotes the version, and set -u turns a missing
+          # env var into a hard failure partway through the push.
+          VERSION: ${{ steps.version.outputs.value }}
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
           AUR_SSH_PASSPHRASE: ${{ secrets.AUR_SSH_PASSPHRASE }}
         run: |
