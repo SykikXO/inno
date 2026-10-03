@@ -127,8 +127,13 @@ jobs:
 
       # makepkg is the only correct generator for .SRCINFO; hand-rolling it is
       # how a package ends up with a stale field nobody notices.
+      #
+      # makepkg refuses to run as root and exits 10, and a container's default
+      # user is root, so it runs as the runner's uid with a writable HOME.
       - name: Generate .SRCINFO
-        run: docker run --rm -v "$PWD:/pkg" -w /pkg archlinux:base-devel makepkg --printsrcinfo > .SRCINFO
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+            -v "$PWD:/pkg" -w /pkg archlinux:base-devel makepkg --printsrcinfo > .SRCINFO
 
       - name: Push to AUR
         if: ${{ github.event_name == 'push' || !inputs.dry_run }}
