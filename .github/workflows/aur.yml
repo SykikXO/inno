@@ -1,0 +1,153 @@
+name: Publish to AUR
+
+# Publishes the tagged version to the AUR package `inno`.
+#
+# Trigger is a version tag, because that is what the PKGBUILD's source URL is
+# built from: source=("...${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz").
+# workflow_dispatch exists because v0.5.0 was tagged before this workflow
+# existed, and re-pushing an existing tag does not fire a tag push.
+#
+# Required repository secrets:
+#   AUR_SSH_KEY           contents of ~/.ssh/aur, the passphrase-protected
+#                         ed25519 key already registered on the AUR account
+#                         (fingerprint SHA256:OSlaDFCaio3RmFkvQ3YGyWYGzhrdgzpUlCpJHhFjoUQ)
+#   AUR_SSH_PASSPHRASE    that key's passphrase
+#
+# The key is never decrypted to disk. It is written back out still encrypted and
+# handed to ssh-agent, which reads the passphrase from stdin. That keeps the
+# passphrase off any command line and out of any file in the runner.
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish, e.g. 0.5.0 (leading v optional)'
+        required: true
+        type: string
+      dry_run:
+        description: Build everything and print the PKGBUILD, but do not push to AUR
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+# One publish at a time. Two concurrent runs would both compute a pkgrel from
+# the same AUR state and the second push would lose the first.
+concurrency:
+  group: aur-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = push ]; then
+            v="${GITHUB_REF_NAME#v}"
+          else
+            v="${{ inputs.version }}"
+            v="${v#v}"
+          fi
+          case "$v" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::'$v' is not a version like 0.5.0"; exit 1 ;;
+          esac
+          echo "value=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse to publish a tag that disagrees with the crate
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          crate=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "tag:   v$VERSION"
+          echo "crate: $crate"
+          [ "$crate" = "$VERSION" ] || {
+            echo "::error::tag v$VERSION does not match the crate version $crate"
+            exit 1
+          }
+
+      # A broken commit must never reach AUR, where the only signal is that
+      # everyone's builds fail.
+      - name: Build check
+        run: cargo build --release --locked
+
+      - name: Rewrite PKGBUILD for this version
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          tarball="inno-${VERSION}.tar.gz"
+          curl -fsSL "https://github.com/${{ github.repository }}/archive/refs/tags/v${VERSION}.tar.gz" -o "$tarball"
+          sum="sha256:$(sha256sum "$tarball" | cut -d' ' -f1)"
+
+          # pkgrel resets on a new pkgver and increments when the same version is
+          # republished, which is the PKGBUILD-only-fix case. Read from the AUR
+          # RPC so a rerun does not silently reuse a pkgrel that is already taken.
+          published=$(curl -fsSL "https://aur.archlinux.org/rpc/v5/info?arg[]=inno" \
+            | sed -n 's/.*"Version":"\([^"]*\)".*/\1/p')
+          pv=${published%%-*}
+          rel=${published##*-}
+          if [ "$pv" = "$VERSION" ]; then
+            pkgrel=$(( ${rel:-0} + 1 ))
+          else
+            pkgrel=1
+          fi
+
+          sed -i \
+            -e "s/^pkgver=.*/pkgver=${VERSION}/" \
+            -e "s/^pkgrel=.*/pkgrel=${pkgrel}/" \
+            -e "s|^sha256sums=.*|sha256sums=('${sum}')|" \
+            PKGBUILD
+
+          echo "AUR currently has: ${published:-nothing}"
+          echo "publishing:        ${VERSION}-${pkgrel}"
+          echo "source checksum:   ${sum}"
+          # Informational only, so it must not be the last command deciding
+          # whether the step passed.
+          git --no-pager diff -- PKGBUILD || true
+
+      # makepkg is the only correct generator for .SRCINFO; hand-rolling it is
+      # how a package ends up with a stale field nobody notices.
+      - name: Generate .SRCINFO
+        run: docker run --rm -v "$PWD:/pkg" -w /pkg archlinux:base-devel makepkg --printsrcinfo > .SRCINFO
+
+      - name: Push to AUR
+        if: ${{ github.event_name == 'push' || !inputs.dry_run }}
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+          AUR_SSH_PASSPHRASE: ${{ secrets.AUR_SSH_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+
+          # ssh-agent is started here rather than in an earlier step because the
+          # agent's socket does not survive between steps, and the push below
+          # needs it.
+          eval "$(ssh-agent -s)"
+          trap 'ssh-agent -k' EXIT
+          printf '%s\n' "$AUR_SSH_PASSPHRASE" | ssh-add - ~/.ssh/aur
+          ssh-add -l
+
+          # Proves the key authenticates to AUR before anything is committed.
+          # accept-new pins the host key on first use rather than trusting
+          # whatever the runner happens to have in known_hosts.
+          git ls-remote aur@aur.archlinux.org:inno.git > /dev/null
+
+          work=$(mktemp -d)
+          git clone --quiet aur@aur.archlinux.org:inno.git "$work/aur"
+          cp PKGBUILD .SRCINFO "$work/aur/"
+          cd "$work/aur"
+          git add PKGBUILD .SRCINFO
+          git -c user.name=github-actions -c user.email=41898282+github-actions[bot]@users.noreply.github.com \
+            commit -m "inno ${VERSION} from ${GITHUB_SHA}"
+          git push
