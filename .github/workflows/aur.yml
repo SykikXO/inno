@@ -3,9 +3,14 @@ name: Publish to AUR
 # Publishes the tagged version to the AUR package `inno`.
 #
 # Trigger is a version tag, because that is what the PKGBUILD's source URL is
-# built from: source=("...${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz").
-# workflow_dispatch exists because v0.5.0 was tagged before this workflow
-# existed, and re-pushing an existing tag does not fire a tag push.
+# built from:
+#   source=("${pkgname}::git+${url}.git#tag=v${pkgver}")
+# The tag is verified to exist and to match Cargo.toml before anything is
+# pushed, so a typo in a tag name fails here instead of leaving the AUR git
+# pointing at a revision nobody can build.
+# workflow_dispatch republishes the version already on main, which is how the
+# first versions were recovered: they were tagged before this workflow existed,
+# and re-pushing an existing tag does not fire a tag push.
 #
 # Required repository secrets:
 #   AUR_SSH_KEY           contents of ~/.ssh/aur, the passphrase-protected
