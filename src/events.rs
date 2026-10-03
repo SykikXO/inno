@@ -10,10 +10,27 @@ use std::path::PathBuf;
 /// with no value is left exactly as written, so a typo in an event file shows
 /// up in the notification instead of quietly rendering as nothing.
 pub fn render(message: &str, values: &HashMap<String, String>) -> String {
-    let mut out = message.to_string();
-    for (key, value) in values {
-        out = out.replace(&format!("{{{key}}}"), value);
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    // One left-to-right pass, so a substituted value is never rescanned. `name`
+    // comes from the BlueZ Alias property, which the advertising device
+    // controls; an Alias of "{state}" must render as that text rather than as
+    // whatever key the map happened to yield next, in an order that Rust
+    // randomizes per process.
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let Some(close) = rest[open..].find('}') else {
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        let key = &rest[open + 1..open + close];
+        match values.get(key) {
+            Some(value) => out.push_str(value),
+            None => out.push_str(&rest[open..open + close + 1]),
+        }
+        rest = &rest[open + close + 1..];
     }
+    out.push_str(rest);
     out
 }
 
@@ -403,6 +420,28 @@ mod tests {
     #[test]
     fn test_render_empty_input() {
         assert_eq!(render("", &HashMap::new()), "");
+    }
+
+    #[test]
+    fn test_render_does_not_rescan_a_substituted_value() {
+        // `name` is a device-supplied BlueZ Alias. An Alias containing a
+        // placeholder must render as that text, identically every run, rather
+        // than being expanded by whichever key the map yields next.
+        let mut values = HashMap::new();
+        values.insert("name".into(), "{state}".into());
+        values.insert("state".into(), "connected".into());
+        assert_eq!(render("{name} {state}", &values), "{state} connected");
+    }
+
+    #[test]
+    fn test_render_is_stable_across_repeated_calls() {
+        let mut values = HashMap::new();
+        values.insert("percentage".into(), "80".into());
+        values.insert("state".into(), "discharging".into());
+        let first = render("{percentage}% ({state})", &values);
+        for _ in 0..32 {
+            assert_eq!(render("{percentage}% ({state})", &values), first);
+        }
     }
 
     #[test]

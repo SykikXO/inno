@@ -126,9 +126,13 @@ impl NotificationState {
         // as a number the daemon did not measure: a Bluetooth connect with no
         // battery in it used to display "AirPods connected 100%".
         let (pct_for_match, display_pct, state) = if is_battery {
-            let pct = notify_event.percentage.unwrap_or(100.0);
             let st = notify_event.state.clone().unwrap_or_else(|| "unknown".to_string());
-            self.battery_devices.insert(notify_event.path.clone(), (pct, st));
+            // A reading-less battery event updates no device entry, so it cannot
+            // poison the aggregate or be published as a level nobody measured.
+            // Its state still counts: a device going away is worth announcing.
+            if let Some(pct) = notify_event.percentage {
+                self.battery_devices.insert(notify_event.path.clone(), (pct, st.clone()));
+            }
 
             let (agg_pct, agg_state) = aggregate_battery_state(&self.battery_devices, &config.battery_mode);
 
@@ -138,7 +142,11 @@ impl NotificationState {
             // its side, so the two disagreed about what a poisoned lock means.
             *battery_state_shared.write().unwrap_or_else(|e| e.into_inner()) = agg_state.clone();
 
-            (agg_pct, Some(agg_pct), agg_state)
+            // The aggregate is a real measurement only while some device has
+            // reported one. With none, the level stays unstated rather than
+            // defaulting to a full battery that was never seen.
+            let measured = (!self.battery_devices.is_empty()).then_some(agg_pct);
+            (measured.unwrap_or(100.0), measured, agg_state)
         } else {
             (notify_event.percentage.unwrap_or(100.0), notify_event.percentage, notify_event.state.clone().unwrap_or_else(|| "unknown".to_string()))
         };

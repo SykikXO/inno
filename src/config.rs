@@ -665,32 +665,24 @@ impl AppConfig {
             }
         }
 
+        // A missing or empty frame directory is a warning, not an error: the one
+        // notification that names it renders as a plain text card and every other
+        // signal still works. It is an error only when a signal actually points
+        // at the broken entry, which is checked per signal above.
         for (name, anim) in &self.animations {
-            if !anim.source.is_dir() {
-                errors.push(format!(
-                    "animations.{}: source is not a directory: {}",
-                    name,
-                    anim.source.display()
-                ));
-            } else {
-                match std::fs::read_dir(&anim.source) {
-                    Ok(entries) => {
-                        let pngs = entries.filter_map(|e| e.ok()).filter(|e| crate::animation::is_png(&e.path())).count();
-                        if pngs == 0 {
-                            errors.push(format!(
-                                "animations.{}: no PNG frames in {}",
-                                name,
-                                anim.source.display()
-                            ));
-                        }
+            match std::fs::read_dir(&anim.source) {
+                Ok(entries) => {
+                    let frames = entries.filter_map(|e| e.ok()).filter(|e| crate::animation::is_png(&e.path())).count();
+                    if frames == 0 {
+                        warnings.push(format!("animations.{}: no PNG frames in {}", name, anim.source.display()));
                     }
-                    Err(e) => errors.push(format!(
-                        "animations.{}: cannot read {}: {}",
-                        name,
-                        anim.source.display(),
-                        e
-                    )),
                 }
+                Err(e) => warnings.push(format!(
+                    "animations.{}: cannot read {}: {}",
+                    name,
+                    anim.source.display(),
+                    e
+                )),
             }
 
             if anim.on_complete == OnComplete::Loop && !anim.loop_ {

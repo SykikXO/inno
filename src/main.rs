@@ -156,6 +156,17 @@ async fn main() -> anyhow::Result<()> {
 
     match action {
         Action::Daemon => {
+            // Validated here as well as in the child, so a bad config fails in the
+            // user's terminal with a non-zero status. The child re-executes and
+            // exits, which the parent has no way to observe.
+            let (errors, _) = AppConfig::load_quiet().validate();
+            if !errors.is_empty() {
+                for e in &errors {
+                    eprintln!("inno: config error: {}", e);
+                }
+                eprintln!("inno: refusing to daemonize with an invalid config");
+                std::process::exit(1);
+            }
             println!("inno is running as a daemon. To stop it, use 'pkill inno'.");
             use std::os::unix::process::CommandExt;
 

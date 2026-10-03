@@ -387,15 +387,6 @@ mod tests {
     }
 
     #[test]
-    fn test_load_clamps_zero_fps_to_one() {
-        // A zero fps would make the frame period divide to zero and spin the
-        // event loop.
-        let dir = TempDir::new("anim-fps0");
-        dir.write_frames(2);
-
-    }
-
-    #[test]
     fn test_load_ignores_non_png_entries() {
         let dir = TempDir::new("anim-filter");
         dir.write_frames(2);

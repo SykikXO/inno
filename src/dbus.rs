@@ -324,15 +324,20 @@ async fn run_bus_listener(
 
             // A battery sometimes reports its properties through a separate
             // UPower Get instead of the PropertiesChanged body. Ask once, and
-            // only when the body carried no reading, so the common case costs no
-            // round trip on a runtime that also drives the frame clock.
+            // only when the body is missing either half, so the common case costs
+            // no round trip on a runtime that also drives the frame clock.
+            //
+            // Both halves gate it. A headset battery commonly sends Percentage
+            // and no State, and every shipped signal filters on charging or
+            // discharging, so a missing State here means no signal matches and
+            // the notification never appears at all.
             if is_battery_event
-                && percentage.is_none()
+                && (percentage.is_none() || state.is_none())
                 && let Some((pct, st)) = query_battery_state(&conn, &path).await
             {
                 eprintln!("Battery state query: {:.0}% {}", pct, st);
-                percentage = Some(pct);
-                state = Some(st);
+                percentage.get_or_insert(pct);
+                state.get_or_insert(st);
             }
 
             // Build values map
