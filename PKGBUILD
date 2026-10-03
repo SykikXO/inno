@@ -1,6 +1,6 @@
 # Maintainer: Sykik <xo.sykik@gmail.com>
 pkgname=inno
-pkgver=0.7.0
+pkgver=0.7.1
 pkgrel=1
 pkgdesc="A lightweight, event-driven Wayland notification agent"
 arch=('x86_64')

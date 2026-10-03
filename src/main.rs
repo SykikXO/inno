@@ -89,6 +89,7 @@ fn reload_config(
     animation_timer: &mut tokio::time::Interval,
 ) {
     let old_scale = config.scale;
+    let old_anchor = config.anchor.clone();
     let Some(new) = load_config() else { return };
     *config = new;
     eprintln!("inno: reloaded {} signals", config.signals.len());
@@ -96,8 +97,15 @@ fn reload_config(
     app.clear_animations();
     set_frame_clock(animation_timer, frame_delay(config));
     state.on_config_reload(app, config);
+    // The compositor is told the margins once, when the layer surface is
+    // created, so a new anchor or margin needs re-applying. scale_changed is the
+    // existing flag that drives update_scale_margins plus the redraw that a
+    // geometry change wants anyway, so both cases share one path.
     if (config.scale - old_scale).abs() > 0.01 {
         eprintln!("Scale changed, redrawing...");
+        app.scale_changed = true;
+    } else if config.anchor != old_anchor {
+        eprintln!("Position changed, redrawing...");
         app.scale_changed = true;
     }
 }

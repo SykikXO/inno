@@ -248,8 +248,12 @@ An unrecognised anchor is an error, not a fallback. The old format silently
 treated an unknown word as `bottom`, which meant a typo could put a
 notification on the opposite edge of the screen with nothing printed.
 
-Changing `anchor` takes effect on the next notification; `margin` and `scale`
-also apply on reload.
+`anchor`, `margin` and `scale` all apply on reload, as does everything else.
+Edit the file and then:
+
+```bash
+busctl --user call org.inno.Control /org/inno/Control org.inno.Control Reload
+```
 
 ### Deprecated position string
 
@@ -631,8 +635,8 @@ drops into a package build or a pre-commit hook.
 - `output = "all"` is accepted by the config parser but not implemented. It
   behaves the same as the default. Multi-output notification placement needs a
   layer surface per output.
-- Changing `position` or `output` needs a restart. `margin_*`, `scale`, and
-  everything else apply on config reload.
+- Changing `output` needs a restart. Everything else, including `anchor` and the
+  margins, applies on config reload.
 - Only `inno.toml` is watched for changes. A new or edited file under
   `events/` is picked up on the next start, or after a `Reload` over the
   control interface.
