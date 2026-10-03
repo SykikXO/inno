@@ -45,7 +45,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Resolve version
         id: version
@@ -76,6 +76,17 @@ jobs:
 
       # A broken commit must never reach AUR, where the only signal is that
       # everyone's builds fail.
+      #
+      # The -dev packages are needed because cairo-rs, wayland-sys, glib-sys and
+      # smithay's build script all shell out to pkg-config. The PKGBUILD gets these
+      # for free because Arch ships the .pc files in the runtime packages, so the
+      # dependency is invisible until you build on Ubuntu.
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            pkg-config libglib2.0-dev libcairo2-dev libwayland-dev libxkbcommon-dev
+
       - name: Build check
         run: cargo build --release --locked
 
