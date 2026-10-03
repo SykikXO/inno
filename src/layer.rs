@@ -1,6 +1,6 @@
 use crate::animation::{AnimPlayer, TargetSize};
 use crate::config::AppConfig;
-use crate::config::{AnimAsset, DisplayMode, Signal};
+use crate::config::{AnimAsset, DisplayMode, Signal, VAnchor};
 use crate::draw;
 use crate::draw::DrawState;
 use std::collections::HashMap;
@@ -49,12 +49,23 @@ struct RenderKey {
 /// Sets all four margins from the anchor, scaled. The compositor honours the
 /// margin of an anchored edge and ignores the margin of an axis with no anchor,
 /// so an unanchored axis is simply centred.
+///
+/// A margin measures to the visible card, not to the edge of the surface around
+/// it. The card is drawn inside a surface that reserves `draw::V_PADDING` of
+/// room above and below for a transition to move through, and that padding is
+/// an implementation detail of the animation rather than something the person
+/// writing the config asked for. Compensating for it here is what makes
+/// `margin = 0` sit flush against the screen edge, and it makes a negative
+/// margin mean what it looks like: that much of the card hanging off the edge.
 fn set_margins(layer: &LayerSurface, config: &AppConfig, s: f64) {
     let a = &config.anchor;
+    let pad = draw::V_PADDING / 2.0;
+    let top = a.margin_top as f64 - if a.v == VAnchor::Top { pad } else { 0.0 };
+    let bottom = a.margin_bottom as f64 - if a.v == VAnchor::Bottom { pad } else { 0.0 };
     layer.set_margin(
-        (a.margin_top as f64 * s) as i32,
+        (top * s) as i32,
         (a.margin_right as f64 * s) as i32,
-        (a.margin_bottom as f64 * s) as i32,
+        (bottom * s) as i32,
         (a.margin_left as f64 * s) as i32,
     );
 }
@@ -1063,5 +1074,58 @@ mod tests {
 
         let different_key = RenderKey { text: "other".into(), ..key };
         assert!(!cache.matches(&different_key));
+    }
+}
+
+/// A margin measures to the visible card, not to the edge of the surface around
+/// it. These pin the arithmetic `set_margins` uses, which is otherwise only
+/// observable on a real compositor.
+#[cfg(test)]
+mod placement_tests {
+    use super::*;
+    use crate::config::{Anchor, HAnchor, VAnchor};
+
+    /// The four values `set_margins` would hand the compositor, at scale 1.
+    fn margins(a: &Anchor, pad: f64) -> (i32, i32, i32, i32) {
+        let top = a.margin_top as f64 - if a.v == VAnchor::Top { pad } else { 0.0 };
+        let bottom = a.margin_bottom as f64 - if a.v == VAnchor::Bottom { pad } else { 0.0 };
+        (top as i32, a.margin_right, bottom as i32, a.margin_left)
+    }
+
+    const PAD: f64 = draw::V_PADDING / 2.0;
+
+    #[test]
+    fn the_padding_is_the_60px_that_used_to_eat_a_zero_margin() {
+        assert_eq!(draw::V_PADDING, 120.0);
+        assert_eq!(PAD, 60.0);
+    }
+
+    #[test]
+    fn a_centred_axis_is_never_compensated() {
+        let a = Anchor {
+            h: HAnchor::Center,
+            v: VAnchor::Center,
+            margin_top: 10,
+            margin_bottom: 10,
+            margin_left: 10,
+            margin_right: 10,
+        };
+        assert_eq!(margins(&a, PAD), (10, 10, 10, 10));
+    }
+
+    #[test]
+    fn a_bottom_anchored_margin_is_the_distance_to_the_card() {
+        let a = Anchor { v: VAnchor::Bottom, margin_bottom: 90, margin_top: 5, ..Default::default() };
+        let (top, _right, bottom, _left) = margins(&a, PAD);
+        // The surface goes 90 - 60, so that after the 60px of padding the
+        // visible card sits 90px above the edge.
+        assert_eq!(bottom, 30);
+        assert_eq!(top, 5, "an unanchored edge keeps its margin");
+    }
+
+    #[test]
+    fn a_negative_margin_hangs_the_card_off_the_edge() {
+        let a = Anchor { v: VAnchor::Bottom, margin_bottom: -20, ..Default::default() };
+        assert_eq!(margins(&a, PAD).2, -80);
     }
 }

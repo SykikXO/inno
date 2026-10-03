@@ -277,6 +277,18 @@ check_slide() {
     stop_daemon
 }
 
+# Where a text-only card actually lands relative to the screen edge. This is
+# the check that proves a margin measures to the visible card.
+check_plain() {
+    say "plain: a text-only card sits where the margin says"
+    shot "$WORK/p-base.png"
+    daemon --test-signal PLAIN --no-dbus
+    sleep 2.5
+    shot "$WORK/p.png"
+    stop_daemon
+    say "  $(measure "$WORK/p-base.png" "$WORK/p.png")"
+}
+
 # The animation box sits above the text card and both are centred.
 check_layout() {
     say "layout: animation above text, both centred"
@@ -389,7 +401,8 @@ EOF
             # An explicit duration is needed on the single-frame assets: with
             # none set, the display time is derived from the animation's own
             # length, and one frame at 10fps is 0.1s, gone before the first capture.
-            printf 'animation_ref = "%s"\nduration = %s\n\n' "$ref" "$secs"
+            [ "$ref" = '""' ] || printf 'animation_ref = "%s"\n' "$ref"
+            printf 'duration = %s\n\n' "$secs"
         } >> "$CFG/inno.toml"
     done <<'SIGNALS'
 message       animation     frame     secs
@@ -399,7 +412,8 @@ SLIDEMOVE     slide_right   dot        8
 TEXTMODE      ""            dottext    30
 RELOOP        ""            ripple     60
 TIMING30      ""            timing30   30
-TIMING60      ""            timing60   30
+TIMING60      ""            timing60    30
+PLAIN         ""            ""         30
 SIGNALS
 }
 
@@ -435,6 +449,7 @@ main() {
             fade)   check_fade ;;
             slide)  check_slide ;;
             layout) check_layout ;;
+    plain)  check_plain ;;
             reload) check_reload ;;
             *) fail "unknown check: $c" ;;
         esac

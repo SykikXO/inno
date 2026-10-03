@@ -4,7 +4,7 @@ use std::f64::consts::PI;
 
 /// Total space a transition has to move through, split evenly above and below
 /// the card. A bounce travels upward, so the top half is the one in use.
-const V_PADDING: f64 = 120.0;
+pub const V_PADDING: f64 = 120.0;
 
 #[derive(Debug, Clone)]
 pub struct DrawState {
