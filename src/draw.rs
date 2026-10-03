@@ -2,8 +2,9 @@ use crate::config::{Animation, AppConfig, Signal};
 use cairo::{Context, LinearGradient};
 use std::f64::consts::PI;
 
-const V_PADDING_TOP: f64 = 60.0; // Space for upward animations
-const V_PADDING_BOTTOM: f64 = 60.0; // Space for downward animations
+/// Total space a transition has to move through, split evenly above and below
+/// the card. A bounce travels upward, so the top half is the one in use.
+const V_PADDING: f64 = 120.0;
 
 #[derive(Debug, Clone)]
 pub struct DrawState {
@@ -84,29 +85,52 @@ fn measure_icon(cr: &Context, icon: &str, size: f64) -> cairo::TextExtents {
     cr.text_extents(icon).unwrap()
 }
 
-/// Measure text and icon dimensions without rendering
-pub fn measure_text(text: &str, config: &AppConfig, signal: Option<&Signal>, scale: f64) -> (i32, i32) {
-    let dummy = cairo::ImageSurface::create(cairo::Format::ARgb32, 1, 1).unwrap();
-    let cr = cairo::Context::new(&dummy).unwrap();
+/// Everything both the measuring pass and the drawing pass need from cairo.
+struct Layout {
+    w: i32,
+    /// Height of the card proper, excluding the space reserved for a transition.
+    h_content: f64,
+    h: i32,
+    /// Width the icon occupies, its advance plus the gap after it.
+    icon_w: f64,
+    /// Extents of the signal's icon at the icon size, if it has one.
+    icon_ext: Option<cairo::TextExtents>,
+    /// Extents of the body text at the configured font size.
+    text_ext: cairo::TextExtents,
+}
 
+/// Selects the font, measures the icon and the body text, and returns the card
+/// size. The measuring pass and the drawing pass both need this, and they were
+/// two copies of it that could disagree about how wide the card is.
+fn layout(cr: &Context, text: &str, config: &AppConfig, signal: Option<&Signal>, scale: f64) -> Layout {
     cr.select_font_face(&config.font, config.font_slant, config.font_weight);
 
-    let mut icon_w = 0.0;
-    if let Some(s) = signal
-        && !s.icon.is_empty()
-    {
-        let icon_ext = measure_icon(&cr, &s.icon, s.icon_size * scale);
-        icon_w = icon_ext.x_advance() + 10.0 * scale;
-    }
+    let icon_ext = signal
+        .filter(|s| !s.icon.is_empty())
+        .map(|s| measure_icon(cr, &s.icon, s.icon_size * scale));
+    let icon_w = icon_ext.as_ref().map_or(0.0, |e| e.x_advance() + 10.0 * scale);
 
     cr.set_font_size(config.font_size * scale);
     let ext = cr.text_extents(text).unwrap();
 
     let w = (ext.width().ceil() + 20.0 * scale + icon_w).ceil() as i32;
     let h_content = ext.height().ceil() + 20.0 * scale;
-    let h = (h_content + V_PADDING_TOP * scale + V_PADDING_BOTTOM * scale) as i32;
+    Layout {
+        w,
+        h_content,
+        h: (h_content + V_PADDING * scale) as i32,
+        icon_w,
+        icon_ext,
+        text_ext: ext,
+    }
+}
 
-    (w, h)
+/// Measure text and icon dimensions without rendering
+pub fn measure_text(text: &str, config: &AppConfig, signal: Option<&Signal>, scale: f64) -> (i32, i32) {
+    let dummy = cairo::ImageSurface::create(cairo::Format::ARgb32, 1, 1).unwrap();
+    let cr = cairo::Context::new(&dummy).unwrap();
+    let l = layout(&cr, text, config, signal, scale);
+    (l.w, l.h)
 }
 
 pub fn draw_with_signal(
@@ -129,28 +153,14 @@ pub fn draw_with_signal(
 
     let alpha = state.alpha;
 
-    cr.select_font_face(&config.font, config.font_slant, config.font_weight);
-
-    let mut icon_w = 0.0;
-    if let Some(s) = signal
-        && !s.icon.is_empty()
-    {
-        let icon_ext = measure_icon(cr, &s.icon, s.icon_size * scale);
-        icon_w = icon_ext.x_advance() + 10.0 * scale;
-    }
-
-    cr.set_font_size(config.font_size * scale);
-    let ext = cr.text_extents(text).unwrap();
-
-    let w = (ext.width().ceil() + 20.0 * scale + icon_w).ceil() as i32;
-    let h_content = ext.height().ceil() + 20.0 * scale;
-    let h = (h_content + V_PADDING_TOP * scale + V_PADDING_BOTTOM * scale) as i32;
+    let Layout { w, h, h_content, icon_w, icon_ext, text_ext: ext } =
+        layout(cr, text, config, signal, scale);
 
     cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
     cr.set_operator(cairo::Operator::Source);
     cr.paint().unwrap();
 
-    cr.translate(state.offset_x * scale, state.offset_y * scale + V_PADDING_TOP * scale);
+    cr.translate(state.offset_x * scale, state.offset_y * scale + V_PADDING / 2.0 * scale);
 
     cr.set_operator(cairo::Operator::Over);
 
@@ -171,10 +181,10 @@ pub fn draw_with_signal(
         cr.fill().unwrap();
     }
 
-    let text_x = if let Some(s) = signal {
-        if !s.icon.is_empty() {
-            let icon_ext = measure_icon(cr, &s.icon, s.icon_size * scale);
+    let text_x = match (signal, icon_ext) {
+        (Some(s), Some(icon_ext)) => {
             cr.set_source_rgba(r, g, b, a * alpha);
+            cr.set_font_size(s.icon_size * scale);
             cr.move_to(
                 10.0 * scale - icon_ext.x_bearing(),
                 h_content / 2.0 - (icon_ext.height() / 2.0 + icon_ext.y_bearing()),
@@ -182,11 +192,8 @@ pub fn draw_with_signal(
             cr.show_text(&s.icon).unwrap();
             cr.set_font_size(config.font_size * scale);
             10.0 * scale + icon_w
-        } else {
-            10.0 * scale
         }
-    } else {
-        10.0 * scale
+        _ => 10.0 * scale,
     };
 
     cr.set_source_rgba(r, g, b, a * alpha);
@@ -639,3 +646,4 @@ mod tests {
         assert_eq!(data[3], 255, "radius 0 should fill the top-left pixel");
     }
 }
+
