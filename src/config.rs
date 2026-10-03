@@ -13,6 +13,7 @@ pub const HIDE_TIMEOUT_SECS: u64 = 86400;
 #[derive(Debug, Deserialize, Default)]
 struct ConfigFile {
     general: Option<GeneralConfig>,
+    position: Option<PositionTable>,
     appearance: Option<AppearanceConfig>,
     #[serde(default)]
     colors: HashMap<String, [f64; 4]>,
@@ -38,6 +39,8 @@ struct GeneralConfig {
     font_size: Option<f64>,
     font_slant: Option<String>,
     font_weight: Option<String>,
+    /// Deprecated six-field form. Superseded by the top-level `[position]`
+    /// table, which is order-independent and can address each edge.
     position: Option<String>,
     format: Option<String>,
     output: Option<String>,
@@ -168,7 +171,7 @@ pub enum BatteryMode {
     Lowest,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum HAnchor {
     Left,
     #[default]
@@ -176,7 +179,7 @@ pub enum HAnchor {
     Right,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum VAnchor {
     Top,
     Center,
@@ -184,35 +187,175 @@ pub enum VAnchor {
     Bottom,
 }
 
-#[derive(Debug, Clone, Default)]
+/// Where the notification sits, and how far from each anchored edge.
+///
+/// Margins are per edge rather than per axis because that is what the compositor
+/// actually acts on: it honours the margin of an anchored edge and ignores the
+/// margin of an axis with no anchor, since an unanchored axis is centred. The
+/// old format had `margin_h`, `margin_v` and a pair of offsets to express that,
+/// where the offsets existed only because a centred axis ignores its margin.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Anchor {
     pub h: HAnchor,
     pub v: VAnchor,
-    pub margin_h: i32,
-    pub margin_v: i32,
-    pub offset_x: i32,
-    pub offset_y: i32,
+    pub margin_top: i32,
+    pub margin_bottom: i32,
+    pub margin_left: i32,
+    pub margin_right: i32,
+}
+
+/// The `[position]` table.
+#[derive(Debug, Clone, Default, Deserialize)]
+struct PositionTable {
+    /// Which edge or corner to sit against. Order does not matter, so
+    /// `bottom-center` and `center-bottom` are the same placement.
+    anchor: Option<String>,
+    /// Distance from every anchored edge, unless overridden per edge below.
+    margin: Option<i32>,
+    margin_top: Option<i32>,
+    margin_bottom: Option<i32>,
+    margin_left: Option<i32>,
+    margin_right: Option<i32>,
 }
 
 impl Anchor {
-    pub fn parse(s: &str) -> Self {
-        let parts: Vec<&str> = s.split(',').map(|p| p.trim()).collect();
-        let h = match parts.first().map(|s| s.to_lowercase()).as_deref() {
-            Some("left") => HAnchor::Left,
-            Some("right") => HAnchor::Right,
-            _ => HAnchor::Center,
-        };
-        let v = match parts.get(1).map(|s| s.to_lowercase()).as_deref() {
-            Some("top") => VAnchor::Top,
-            Some("center") => VAnchor::Center,
-            _ => VAnchor::Bottom,
-        };
-        let margin_h = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_MARGIN);
-        let margin_v = parts.get(3).and_then(|s| s.parse().ok()).unwrap_or(margin_h);
-        let offset_x = parts.get(4).and_then(|s| s.parse().ok()).unwrap_or(0);
-        let offset_y = parts.get(5).and_then(|s| s.parse().ok()).unwrap_or(0);
-        Anchor { h, v, margin_h, margin_v, offset_x, offset_y }
+    /// The anchor names, in the order the error message lists them.
+    const ANCHOR_NAMES: &'static str =
+        "top, center, bottom (vertical) and left, center, right (horizontal), \
+         combined freely, e.g. \"bottom-center\", \"top-left\", \"center\"";
+
+    /// Parses an anchor name into a horizontal and vertical anchor.
+    ///
+    /// Strict on purpose. An unrecognised word used to fall through to a
+    /// default, which meant a typo like `center,topp` silently put the
+    /// notification on the opposite edge instead of complaining.
+    fn parse_anchor(s: &str) -> Result<(HAnchor, VAnchor), String> {
+        let (mut h, mut v) = (HAnchor::Center, VAnchor::Center);
+        let mut seen = false;
+        for part in s.split(['-', ' ']).map(str::trim).filter(|p| !p.is_empty()) {
+            match part.to_ascii_lowercase().as_str() {
+                "top" => v = VAnchor::Top,
+                "bottom" => v = VAnchor::Bottom,
+                "left" => h = HAnchor::Left,
+                "right" => h = HAnchor::Right,
+                // Already the default for both axes, and the obvious thing to
+                // write when naming a single edge.
+                "center" | "centre" | "middle" => {}
+                other => {
+                    return Err(format!(
+                        "unknown anchor '{other}'. Expected any of: {}",
+                        Anchor::ANCHOR_NAMES
+                    ));
+                }
+            }
+            seen = true;
+        }
+        if !seen {
+            return Err(format!("empty anchor. Expected any of: {}", Anchor::ANCHOR_NAMES));
+        }
+        Ok((h, v))
     }
+
+    /// Builds an anchor from the `[position]` table.
+    fn from_table(t: &PositionTable) -> Result<Self, String> {
+        let (h, v) = match t.anchor.as_deref() {
+            Some(name) => Self::parse_anchor(name)?,
+            None => (HAnchor::Center, VAnchor::Bottom),
+        };
+        // `margin` is the shorthand for every edge; the per-edge keys win.
+        let base = t.margin.unwrap_or(DEFAULT_MARGIN);
+        Ok(Anchor {
+            h,
+            v,
+            margin_top: t.margin_top.unwrap_or(base),
+            margin_bottom: t.margin_bottom.unwrap_or(base),
+            margin_left: t.margin_left.unwrap_or(base),
+            margin_right: t.margin_right.unwrap_or(base),
+        })
+    }
+
+    /// Parses the old `position = "horizontal,vertical,mh,mv,ox,oy"` string.
+    ///
+    /// Kept working so existing configs do not break, and it maps exactly onto
+    /// the per-edge margins: the horizontal margin applied to both sides and the
+    /// offset shifted one side out by the offset and the other in by it.
+    fn parse(s: &str) -> Result<Self, String> {
+        let parts: Vec<&str> = s.split(',').map(str::trim).collect();
+        let (h, v) = if s.trim().is_empty() {
+            (HAnchor::Center, VAnchor::Bottom)
+        } else {
+            match (h_word(parts[0]), v_word(parts.get(1).copied().unwrap_or("bottom"))) {
+                (Some(h), Some(v)) => (h, v),
+                _ => {
+                    return Err(format!(
+                        "unknown anchor in \"{s}\". Expected any of: {}",
+                        Anchor::ANCHOR_NAMES
+                    ));
+                }
+            }
+        };
+        let mh = num(parts.get(2)).unwrap_or(DEFAULT_MARGIN);
+        let mv = num(parts.get(3)).unwrap_or(mh);
+        let ox = num(parts.get(4)).unwrap_or(0);
+        let oy = num(parts.get(5)).unwrap_or(0);
+        Ok(Anchor {
+            h,
+            v,
+            margin_top: mv + oy,
+            margin_bottom: mv - oy,
+            margin_left: mh - ox,
+            margin_right: mh + ox,
+        })
+    }
+
+    /// Which of the given per-edge margin keys the compositor will ignore,
+    /// because their axis has no anchor and is therefore centred.
+    ///
+    /// Only explicit keys are worth reporting. The `margin` shorthand sets all
+    /// four edges by design, so on a centred axis two of them are always dead
+    /// and saying so on every stock config would be pure noise.
+    fn ignored_explicit_keys(&self, t: &PositionTable) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.v == VAnchor::Center {
+            if t.margin_top.is_some() {
+                out.push("margin_top");
+            }
+            if t.margin_bottom.is_some() {
+                out.push("margin_bottom");
+            }
+        }
+        if self.h == HAnchor::Center {
+            if t.margin_left.is_some() {
+                out.push("margin_left");
+            }
+            if t.margin_right.is_some() {
+                out.push("margin_right");
+            }
+        }
+        out
+    }
+}
+
+fn h_word(word: &str) -> Option<HAnchor> {
+    match word.to_ascii_lowercase().as_str() {
+        "left" => Some(HAnchor::Left),
+        "right" => Some(HAnchor::Right),
+        "center" | "centre" | "middle" => Some(HAnchor::Center),
+        _ => None,
+    }
+}
+
+fn v_word(word: &str) -> Option<VAnchor> {
+    match word.to_ascii_lowercase().as_str() {
+        "top" => Some(VAnchor::Top),
+        "bottom" => Some(VAnchor::Bottom),
+        "center" | "centre" | "middle" => Some(VAnchor::Center),
+        _ => None,
+    }
+}
+
+fn num(field: Option<&&str>) -> Option<i32> {
+    field?.parse().ok()
 }
 
 /// Renders a notification's `format` string.
@@ -303,6 +446,12 @@ pub struct AppConfig {
     pub fps: u64,
     pub scale: f64,
     pub config_path: Option<PathBuf>,
+    /// Problems found while parsing that are the user's to fix. Kept on the
+    /// config so `validate()` can report them instead of the loader silently
+    /// falling back to a default the user never asked for.
+    pub load_errors: Vec<String>,
+    /// Non-fatal problems noticed while parsing, for `validate()` to report.
+    pub load_warnings: Vec<String>,
     pub sound: bool,
 }
 
@@ -327,6 +476,8 @@ impl Default for AppConfig {
             fps: 30,
             scale: 1.0,
             config_path: None,
+            load_errors: Vec::new(),
+            load_warnings: Vec::new(),
         }
     }
 }
@@ -456,6 +607,7 @@ impl AppConfig {
         let file: ConfigFile = toml::from_str(&content)?;
 
         // General settings
+        let mut legacy_position: Option<String> = None;
         if let Some(general) = file.general {
             if let Some(font) = general.font {
                 self.font = font;
@@ -469,9 +621,7 @@ impl AppConfig {
             if let Some(weight) = general.font_weight {
                 self.font_weight = parse_font_weight(&weight);
             }
-            if let Some(pos) = general.position {
-                self.anchor = Anchor::parse(&pos);
-            }
+            legacy_position = general.position.clone();
             if let Some(fmt) = general.format {
                 self.format = fmt;
             }
@@ -505,6 +655,42 @@ impl AppConfig {
             }
             if let Some(g) = appearance.gradient {
                 self.gradient = g;
+            }
+        }
+
+        if let Some(table) = file.position {
+            if legacy_position.is_some() {
+                self.load_errors.push(
+                    "position is set both as a [position] table and as general.position.                      Keep only the [position] table."
+                        .to_string(),
+                );
+            } else {
+                match Anchor::from_table(&table) {
+                    Ok(anchor) => {
+                        let ignored = anchor.ignored_explicit_keys(&table);
+                        if !ignored.is_empty() {
+                            self.load_warnings.push(format!(
+                                "{} ignored: that axis is not anchored, so the compositor \
+                                 centres it. Anchor a side or corner to use them.",
+                                ignored.join(" and ")
+                            ));
+                        }
+                        self.anchor = anchor;
+                    }
+                    Err(e) => self.load_errors.push(e),
+                }
+            }
+        } else if let Some(pos) = legacy_position {
+            match Anchor::parse(&pos) {
+                Ok(anchor) => {
+                    eprintln!(
+                        "inno: position = \"{pos}\" is the old six-field form and will be \
+                         removed. Use a [position] table: anchor, margin, and margin_<edge> \
+                         to override one edge. See the README."
+                    );
+                    self.anchor = anchor;
+                }
+                Err(e) => self.load_errors.push(e),
             }
         }
 
@@ -655,6 +841,9 @@ impl AppConfig {
         let mut errors = Vec::new();
         let mut warnings = Vec::new();
 
+        errors.extend(self.load_errors.iter().cloned());
+        warnings.extend(self.load_warnings.iter().cloned());
+
         if self.signals.is_empty() {
             errors.push("No signals defined in config".to_string());
         }
@@ -787,41 +976,192 @@ mod tests {
     }
 
     #[test]
-    fn test_anchor_parse_full() {
-        let a = Anchor::parse("center,bottom,10,20,5,-15");
-        assert!(matches!(a.h, HAnchor::Center));
-        assert!(matches!(a.v, VAnchor::Bottom));
-        assert_eq!(a.margin_h, 10);
-        assert_eq!(a.margin_v, 20);
-        assert_eq!(a.offset_x, 5);
-        assert_eq!(a.offset_y, -15);
+    fn test_position_table_anchor_and_margin() {
+        let (cfg, _) = load_fixture(
+            r#"
+[position]
+anchor = "top-right"
+margin = 40
+"#,
+        );
+        assert_eq!(cfg.anchor.h, HAnchor::Right);
+        assert_eq!(cfg.anchor.v, VAnchor::Top);
+        assert_eq!(cfg.anchor.margin_top, 40);
+        assert_eq!(cfg.anchor.margin_right, 40);
+        // Not anchored on these axes, so the compositor centres them.
+        assert_eq!(cfg.anchor.margin_bottom, 40);
+        assert_eq!(cfg.anchor.margin_left, 40);
+        assert!(cfg.load_errors.is_empty(), "{:?}", cfg.load_errors);
     }
 
     #[test]
-    fn test_anchor_parse_minimal() {
-        let a = Anchor::parse("left,top");
-        assert!(matches!(a.h, HAnchor::Left));
-        assert!(matches!(a.v, VAnchor::Top));
-        assert_eq!(a.margin_h, DEFAULT_MARGIN);
-        assert_eq!(a.margin_v, DEFAULT_MARGIN);
-        assert_eq!(a.offset_x, 0);
-        assert_eq!(a.offset_y, 0);
+    fn test_position_per_edge_margin_overrides_the_shorthand() {
+        let (cfg, _) = load_fixture(
+            r#"
+[position]
+anchor = "bottom-left"
+margin = 90
+margin_left = 20
+"#,
+        );
+        assert_eq!(cfg.anchor.margin_left, 20);
+        assert_eq!(cfg.anchor.margin_bottom, 90);
+        assert_eq!(cfg.anchor.margin_right, 90);
+        assert_eq!(cfg.anchor.margin_top, 90);
     }
 
     #[test]
-    fn test_anchor_parse_right_bottom() {
-        let a = Anchor::parse("right,bottom,50");
-        assert!(matches!(a.h, HAnchor::Right));
-        assert!(matches!(a.v, VAnchor::Bottom));
-        assert_eq!(a.margin_h, 50);
-        assert_eq!(a.margin_v, 50);
+    fn test_position_anchor_word_order_does_not_matter() {
+        for name in ["bottom-center", "center-bottom", "bottom centre", "BOTTOM-CENTER"] {
+            let (h, v) = Anchor::parse_anchor(name).expect(name);
+            assert_eq!(h, HAnchor::Center, "{name}");
+            assert_eq!(v, VAnchor::Bottom, "{name}");
+        }
     }
 
     #[test]
-    fn test_anchor_parse_defaults() {
-        let a = Anchor::parse("");
-        assert!(matches!(a.h, HAnchor::Center));
-        assert!(matches!(a.v, VAnchor::Bottom));
+    fn test_position_single_edge_name_centres_the_other_axis() {
+        let (h, v) = Anchor::parse_anchor("top").unwrap();
+        assert_eq!((h, v), (HAnchor::Center, VAnchor::Top));
+        let (h, v) = Anchor::parse_anchor("left").unwrap();
+        assert_eq!((h, v), (HAnchor::Left, VAnchor::Center));
+    }
+
+    #[test]
+    fn test_position_rejects_a_typo_instead_of_silently_moving_it() {
+        // "topp" used to fall through to the bottom edge, so a typo relocated the
+        // notification to the opposite side of the screen with no complaint.
+        let err = Anchor::parse_anchor("topp").unwrap_err();
+        assert!(err.contains("topp"), "{err}");
+        assert!(err.contains("bottom"), "the message should list what is valid: {err}");
+    }
+
+    #[test]
+    fn test_position_defaults_to_bottom_centre_when_unspecified() {
+        let a = Anchor::from_table(&PositionTable::default()).unwrap();
+        assert_eq!(a.h, HAnchor::Center);
+        assert_eq!(a.v, VAnchor::Bottom);
+        assert_eq!(a.margin_bottom, DEFAULT_MARGIN);
+    }
+
+    #[test]
+    fn test_only_explicit_ignored_margins_are_reported() {
+        // The shorthand sets all four edges, so on a centred axis two are dead
+        // by design. That must not warn, or every stock config would.
+        let table = PositionTable {
+            anchor: Some("bottom-center".into()),
+            margin: Some(90),
+            ..Default::default()
+        };
+        let a = Anchor::from_table(&table).unwrap();
+        assert!(a.ignored_explicit_keys(&table).is_empty());
+
+        // Naming the dead edge explicitly is a mistake worth reporting.
+        let table = PositionTable {
+            anchor: Some("bottom-center".into()),
+            margin_left: Some(40),
+            ..Default::default()
+        };
+        let a = Anchor::from_table(&table).unwrap();
+        assert_eq!(a.ignored_explicit_keys(&table), ["margin_left"]);
+    }
+
+    #[test]
+    fn test_no_warning_when_every_anchored_edge_is_named() {
+        let (cfg, _) = load_fixture(
+            r#"
+[position]
+anchor = "bottom-center"
+margin = 90
+"#,
+        );
+        assert!(cfg.load_warnings.is_empty(), "{:?}", cfg.load_warnings);
+    }
+
+    #[test]
+    fn test_warning_when_a_named_edge_cannot_be_used() {
+        let (cfg, _) = load_fixture(
+            r#"
+[position]
+anchor = "bottom-center"
+margin = 90
+margin_left = 40
+"#,
+        );
+        assert!(
+            cfg.load_warnings.iter().any(|w| w.contains("margin_left")),
+            "{:?}",
+            cfg.load_warnings
+        );
+    }
+
+    /// The old string form has to keep producing exactly what it produced
+    /// before, or an upgrade silently moves everyone's notification.
+    #[test]
+    fn test_legacy_position_string_still_maps_onto_the_same_margins() {
+        // center,bottom,10,20,5,-15 meant: horizontal margin 10 both sides,
+        // vertical 20, shifted 5 right and 15 up.
+        let a = Anchor::parse("center,bottom,10,20,5,-15").unwrap();
+        assert_eq!(a.h, HAnchor::Center);
+        assert_eq!(a.v, VAnchor::Bottom);
+        assert_eq!(a.margin_left, 10 - 5);
+        assert_eq!(a.margin_right, 10 + 5);
+        assert_eq!(a.margin_top, 20 + -15);
+        assert_eq!(a.margin_bottom, 20 - -15);
+    }
+
+    #[test]
+    fn test_legacy_position_string_falls_back_as_before() {
+        let a = Anchor::parse("left,top").unwrap();
+        assert_eq!(a.h, HAnchor::Left);
+        assert_eq!(a.v, VAnchor::Top);
+        assert_eq!(a.margin_left, DEFAULT_MARGIN);
+        assert_eq!(a.margin_bottom, DEFAULT_MARGIN);
+        assert_eq!(a.margin_right, DEFAULT_MARGIN);
+
+        let a = Anchor::parse("right,bottom,50").unwrap();
+        assert_eq!(a.h, HAnchor::Right);
+        assert_eq!(a.margin_right, 50);
+        // margin_v used to fall back to margin_h.
+        assert_eq!(a.margin_bottom, 50);
+
+        let a = Anchor::parse("").unwrap();
+        assert_eq!(a.h, HAnchor::Center);
+        assert_eq!(a.v, VAnchor::Bottom);
+    }
+
+    #[test]
+    fn test_legacy_position_string_rejects_an_unknown_anchor() {
+        assert!(Anchor::parse("middleish,top").is_err());
+    }
+
+    #[test]
+    fn test_position_set_both_ways_is_an_error() {
+        let (cfg, _) = load_fixture(
+            r#"
+[general]
+position = "center,bottom,0,90,0,0"
+
+[position]
+anchor = "bottom-center"
+"#,
+        );
+        assert!(
+            cfg.load_errors.iter().any(|e| e.contains("both")),
+            "{:?}",
+            cfg.load_errors
+        );
+    }
+
+    #[test]
+    fn test_a_typo_in_position_becomes_a_load_error() {
+        let (cfg, _) = load_fixture(
+            r#"
+[position]
+anchor = "bottom-cener"
+"#,
+        );
+        assert!(!cfg.load_errors.is_empty(), "a typo must be reported");
     }
 
     #[test]
@@ -1283,10 +1623,10 @@ mod tests {
 
     #[test]
     fn test_anchor_parse_with_whitespace() {
-        let a = Anchor::parse("  center , top , 15 ");
-        assert!(matches!(a.h, HAnchor::Center));
-        assert!(matches!(a.v, VAnchor::Top));
-        assert_eq!(a.margin_h, 15);
+        let a = Anchor::parse("  center , top , 15 ").unwrap();
+        assert_eq!(a.h, HAnchor::Center);
+        assert_eq!(a.v, VAnchor::Top);
+        assert_eq!(a.margin_bottom, 15);
     }
 
     #[test]

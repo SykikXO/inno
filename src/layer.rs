@@ -46,20 +46,16 @@ struct RenderKey {
     scale: f64,
 }
 
-/// Sets all four margins from the anchor, scaled. Offsets move the surface
-/// without changing how far the compositor keeps it from the anchored edge.
+/// Sets all four margins from the anchor, scaled. The compositor honours the
+/// margin of an anchored edge and ignores the margin of an axis with no anchor,
+/// so an unanchored axis is simply centred.
 fn set_margins(layer: &LayerSurface, config: &AppConfig, s: f64) {
-    let (mv, mh, oy, ox) = (
-        config.anchor.margin_v,
-        config.anchor.margin_h,
-        config.anchor.offset_y,
-        config.anchor.offset_x,
-    );
+    let a = &config.anchor;
     layer.set_margin(
-        ((mv + oy) as f64 * s) as i32,
-        ((mh + ox) as f64 * s) as i32,
-        ((mv - oy) as f64 * s) as i32,
-        ((mh - ox) as f64 * s) as i32,
+        (a.margin_top as f64 * s) as i32,
+        (a.margin_right as f64 * s) as i32,
+        (a.margin_bottom as f64 * s) as i32,
+        (a.margin_left as f64 * s) as i32,
     );
 }
 
