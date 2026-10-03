@@ -172,6 +172,9 @@ pub struct LayerApp {
     /// Set after a shm buffer allocation fails so the cause is reported once
     /// rather than leaving the notification silently frozen.
     pub alloc_failed: bool,
+    /// True when the surface currently shows the cached text at full opacity and
+    /// no offset, so a frame at the same transform would be a no-op.
+    committed_identity: bool,
 }
 
 impl LayerApp {
@@ -205,6 +208,7 @@ impl LayerApp {
             anim_players: HashMap::new(),
             failed_animations: std::collections::HashSet::new(),
             alloc_failed: false,
+            committed_identity: false,
         })
     }
 
@@ -387,12 +391,15 @@ impl LayerApp {
 
     /// Attaches and commits a freshly drawn buffer over the whole surface.
     /// All callers have already set self.width/self.height to the damage rect.
-    fn commit_buffer(&self, buffer: &smithay_client_toolkit::shm::slot::Buffer) {
+    fn commit_buffer(&mut self, buffer: &smithay_client_toolkit::shm::slot::Buffer) {
         let Some(layer) = self.layer_surface.as_ref() else { return };
         layer.set_size(self.width, self.height);
         layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
         layer.wl_surface().damage(0, 0, self.width as i32, self.height as i32);
         layer.commit();
+        // Every commit invalidates the assumption that the surface still shows
+        // the cached text at full opacity, and this is the only place that knows.
+        self.committed_identity = false;
     }
 
     /// Reports a shm allocation failure once. Repeating it every frame at
@@ -615,41 +622,40 @@ impl LayerApp {
         h: i32,
     ) {
         self.frame_cache.clear();
-
+        self.committed_identity = false;
         self.width = w as u32;
         self.height = h as u32;
 
-        let Some((buffer, ptr, stride)) = self.allocate_buffer(w, h) else { return };
+        // Drawn straight into a heap surface. It used to be drawn into a shared
+        // memory buffer, copied into a second surface so the cache would outlive
+        // the recyclable slot, and committed. The caller then composited the
+        // cache over the identical pixels and committed again, so every
+        // notification paid for two buffers, two memsets, two full-surface
+        // composites and two commits to display one image.
+        let Ok(surface) = cairo::ImageSurface::create(cairo::Format::ARgb32, w, h) else { return };
+        let cr = cairo::Context::new(&surface).expect("cairo context");
+        draw::draw_with_signal(&cr, text, config, signal, &DrawState::default(), scale);
+        surface.flush();
 
-        unsafe {
-            let surface = cairo::ImageSurface::create_for_data_unsafe(
-                ptr, cairo::Format::ARgb32, w, h, stride,
-            )
-            .expect("cairo surface");
-
-            let base_state = DrawState { frame: 0, visible: true, alpha: 1.0, offset_x: 0.0, offset_y: 0.0 };
-            let cr = cairo::Context::new(&surface).expect("cairo context");
-            draw::draw_with_signal(&cr, text, config, signal, &base_state, scale);
-            surface.flush();
-
-            let cached = cairo::ImageSurface::create(cairo::Format::ARgb32, w, h).unwrap();
-            let cr_cache = cairo::Context::new(&cached).unwrap();
-            cr_cache.set_source_surface(&surface, 0.0, 0.0).unwrap();
-            cr_cache.paint().unwrap();
-
-            self.frame_cache.surface = Some(cached);
-            self.frame_cache.key = Some(key);
-            self.frame_cache.width = w;
-            self.frame_cache.height = h;
-        }
-
-        self.commit_buffer(&buffer);
+        self.frame_cache.surface = Some(surface);
+        self.frame_cache.key = Some(key);
+        self.frame_cache.width = w;
+        self.frame_cache.height = h;
     }
 
     fn blit_cached(&mut self, scale: f64, draw_state: &DrawState) {
+        let identity = draw_state.alpha == 1.0 && draw_state.offset_x == 0.0 && draw_state.offset_y == 0.0;
+        // Most of a transition's frames land on exactly the transform the
+        // previous one did: a slide settles after 20 frames and spends the rest
+        // of its run unmoved, a fade sits at full opacity through the middle.
+        // Compositing those again re-uploads an identical texture to the
+        // compositor 130 times over for nothing.
+        if identity && self.committed_identity {
+            return;
+        }
         // Clone the refcounted surface to avoid holding an immutable borrow
         // on self.frame_cache across the allocate_buffer call.
-        let cached = self.frame_cache.surface.clone().unwrap();
+        let Some(cached) = self.frame_cache.surface.clone() else { return };
         let w = self.frame_cache.width;
         let h = self.frame_cache.height;
 
@@ -671,6 +677,7 @@ impl LayerApp {
         }
 
         self.commit_buffer(&buffer);
+        self.committed_identity = identity;
     }
 
     /// Draw text without signal (for DBus Show command)

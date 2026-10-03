@@ -244,6 +244,30 @@ check_fade() {
     stop_daemon
 }
 
+# A slide settles: its offset reaches zero and stays there, so most of the
+# transition's frames carry exactly the transform the previous one did. The
+# daemon skips re-uploading those. That is only safe if the settled frame is
+# still on screen afterwards, which is what this checks: the box must move
+# early, stop moving once settled, and still be drawn at the end. A guard that
+# skipped the wrong frames would leave the surface showing nothing.
+check_slide() {
+    say "slide: moves, settles, and stays on screen"
+    shot "$WORK/sl-base.png"
+    daemon --test-signal SLIDEMOVE --no-dbus
+    local prev="" at
+    for at in 200 400 700 1200 2000 3000; do
+        sleep 0.4
+        shot "$WORK/sl-$at.png"
+        if [ -n "$prev" ]; then
+            say "  t=${at}ms moved=$(frame_delta "$WORK/sl-$prev.png" "$WORK/sl-$at.png") $(measure "$WORK/sl-base.png" "$WORK/sl-$at.png")"
+        else
+            say "  t=${at}ms $(measure "$WORK/sl-base.png" "$WORK/sl-$at.png")"
+        fi
+        prev=$at
+    done
+    stop_daemon
+}
+
 # The animation box sits above the text card and both are centred.
 check_layout() {
     say "layout: animation above text, both centred"
@@ -367,6 +391,16 @@ animation_ref = "dot"
 duration = 8
 
 [[signal]]
+message = "SLIDEMOVE"
+icon = ""
+color = "white"
+threshold = 0
+state = "any"
+animation = "slide_right"
+animation_ref = "dot"
+duration = 8
+
+[[signal]]
 message = "TEXTMODE"
 icon = ""
 color = "white"
@@ -428,12 +462,13 @@ main() {
     require_clean_surface
 
     local checks=("$@")
-    [ ${#checks[@]} -eq 0 ] && checks=(timing scale fade layout reload)
+    [ ${#checks[@]} -eq 0 ] && checks=(timing scale fade slide layout reload)
     for c in "${checks[@]}"; do
         case $c in
             timing) check_timing ;;
             scale)  check_scale ;;
             fade)   check_fade ;;
+            slide)  check_slide ;;
             layout) check_layout ;;
             reload) check_reload ;;
             *) fail "unknown check: $c" ;;
