@@ -44,6 +44,9 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # Backstop. Every network call has its own timeout, but a wedged runner
+    # should not be able to hold the concurrency group for six hours.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
 
@@ -96,13 +99,13 @@ jobs:
         run: |
           set -euo pipefail
           tarball="inno-${VERSION}.tar.gz"
-          curl -fsSL "https://github.com/${{ github.repository }}/archive/refs/tags/v${VERSION}.tar.gz" -o "$tarball"
+          curl -fsSL --max-time 60 "https://github.com/${{ github.repository }}/archive/refs/tags/v${VERSION}.tar.gz" -o "$tarball"
           sum="sha256:$(sha256sum "$tarball" | cut -d' ' -f1)"
 
           # pkgrel resets on a new pkgver and increments when the same version is
           # republished, which is the PKGBUILD-only-fix case. Read from the AUR
           # RPC so a rerun does not silently reuse a pkgrel that is already taken.
-          published=$(curl -fsSL "https://aur.archlinux.org/rpc/v5/info?arg[]=inno" \
+          published=$(curl -fsSL --max-time 30 "https://aur.archlinux.org/rpc/v5/info?arg[]=inno" \
             | sed -n 's/.*"Version":"\([^"]*\)".*/\1/p')
           pv=${published%%-*}
           rel=${published##*-}
@@ -189,16 +192,24 @@ jobs:
           fi
           echo "authenticated as $got"
 
+          # BatchMode matters more than it looks: without it, ssh will sit
+          # waiting for a passphrase or a host-key confirmation on a runner that
+          # has neither, and the step hangs instead of failing. ConnectTimeout
+          # covers AUR being unreachable, which is what an actual outage looks
+          # like from here.
+          export GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking=accept-new"
+
           # Proves the key authenticates to AUR before anything is committed.
-          # accept-new pins the host key on first use rather than trusting
-          # whatever the runner happens to have in known_hosts.
-          git ls-remote aur@aur.archlinux.org:inno.git > /dev/null
+          if ! timeout 60 git ls-remote aur@aur.archlinux.org:inno.git > /dev/null; then
+            echo "::error::could not read the AUR package repo over SSH. The key is loaded and correct, so this is AUR being unreachable or refusing the connection."
+            exit 1
+          fi
 
           work=$(mktemp -d)
-          git clone --quiet aur@aur.archlinux.org:inno.git "$work/aur"
+          timeout 120 git clone --quiet aur@aur.archlinux.org:inno.git "$work/aur"
           cp PKGBUILD .SRCINFO "$work/aur/"
           cd "$work/aur"
           git add PKGBUILD .SRCINFO
           git -c user.name=github-actions -c user.email=41898282+github-actions[bot]@users.noreply.github.com \
             commit -m "inno ${VERSION} from ${GITHUB_SHA}"
-          git push
+          timeout 120 git push
