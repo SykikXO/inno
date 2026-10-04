@@ -56,6 +56,20 @@ pub fn notification_duration(sig: &crate::config::Signal, config: &AppConfig) ->
     }
 }
 
+/// How long to wait before showing this notification again, or `None` for never.
+///
+/// This exists because a notification that appears once and leaves can be missed
+/// entirely. Someone glanced away from the one that said the battery was full,
+/// forgot the charger was still plugged in, and found out ten minutes later.
+///
+/// `remind = 0` and an omitted `remind` both mean off, so adding the feature
+/// changes nothing for anyone who does not ask for it. The interval is measured
+/// from when the notification was last shown, not from when it was dismissed, so
+/// `remind` smaller than `duration` repeats without a gap.
+pub fn reminder_after(sig: &crate::config::Signal) -> Option<std::time::Duration> {
+    sig.remind.filter(|s| *s > 0).map(std::time::Duration::from_secs)
+}
+
 /// How many frames the procedural transition spans.
 pub fn transition_frames(sig: &crate::config::Signal, config: &AppConfig) -> f64 {
     display_seconds(sig, config).unwrap_or(DEFAULT_DURATION_SECS as f64) * config.fps as f64
@@ -91,6 +105,37 @@ pub struct NotificationState {
     pub prev_state: HashMap<String, Option<String>>,
     pub prev_signal_msg: HashMap<String, Option<String>>,
     pub state_key_order: VecDeque<String>,
+    /// The signal to show again, and how often, while it is still the one that
+    /// fired. Survives being hidden, because a reminder that stopped when the
+    /// notification left would never come back. Cleared by a click, which is
+    /// the only way to say "I have seen it" without waiting for the state to
+    /// change.
+    pub reminder: Option<Reminder>,
+}
+
+/// A notification that repeats until something else happens to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reminder {
+    /// Index into `AppConfig::signals`. Indices are invalidated by a config
+    /// reload, which clears this rather than risk repeating the wrong signal.
+    pub signal_idx: usize,
+    pub every: std::time::Duration,
+}
+
+/// The reminder a newly shown signal implies, if any.
+///
+/// A signal without `remind` clears whatever reminder the previous signal set,
+/// so a reminder can never outlive the thing it was reminding about.
+fn reminder_for(sig_idx: Option<usize>, sig: &crate::config::Signal) -> Option<Reminder> {
+    Some(Reminder { signal_idx: sig_idx?, every: reminder_after(sig)? })
+}
+
+/// Whether a reminder still refers to the same signal after a reload.
+///
+/// The index is a position in a list a reload can reorder. Repeating whatever now
+/// sits there would show the wrong message, so the answer is to drop it.
+fn reminder_survives_reload(r: Option<Reminder>, config: &AppConfig) -> Option<Reminder> {
+    r.filter(|r| config.signals.get(r.signal_idx).is_some())
 }
 
 impl NotificationState {
@@ -106,6 +151,7 @@ impl NotificationState {
             prev_state: HashMap::new(),
             prev_signal_msg: HashMap::new(),
             state_key_order: VecDeque::new(),
+            reminder: None,
         }
     }
 
@@ -219,6 +265,8 @@ impl NotificationState {
         self.current_anim_ref = sig.animation_ref.clone();
         self.current_text = Some(text.to_string());
 
+        self.reminder = reminder_for(sig_idx, sig);
+
         // A frame animation wraps the procedural one, so a signal may name
         // both: `animation` supplies the transition, `animation_ref` the
         // content. Naming an [animations] key in `animation` is shorthand for
@@ -286,7 +334,26 @@ impl NotificationState {
         self.show(app, config, sig, Some(sig_idx), &text)
     }
 
+    /// Shows a remembered signal again, as if its event had just arrived.
+    ///
+    /// The transition restarts rather than resuming, because this reads as a new
+    /// notification arriving and pretending otherwise would leave the card
+    /// frozen part way through its entrance.
+    pub fn show_reminder(
+        &mut self,
+        app: &mut LayerApp,
+        config: &AppConfig,
+        sig_idx: usize,
+        sig: &crate::config::Signal,
+        pct: Option<f64>,
+    ) -> std::time::Duration {
+        let text = format_text(&config.format, &sig.icon, &sig.message, pct);
+        self.show(app, config, sig, Some(sig_idx), &text)
+    }
+
     pub fn hide_and_next(&mut self, app: &mut LayerApp) -> std::time::Duration {
+        // The reminder is deliberately left alone: the card going away is when
+        // the reminder comes due.
         app.hide();
         self.current_text = None;
         self.current_anim_ref = None;
@@ -297,6 +364,10 @@ impl NotificationState {
     }
 
     pub fn dismiss_by_click(&mut self, app: &mut LayerApp) {
+        // Clicking means "I have seen it". Anything else would keep reminding
+        // someone who has already told the only way available that they got the
+        // message, with no way to stop it.
+        self.reminder = None;
         if self.current_text.is_some() {
             println!("Dismissed by click");
             app.hide();
@@ -325,6 +396,11 @@ impl NotificationState {
         self.prev_signal_msg.clear();
         self.state_key_order.clear();
         self.draw_state.reset();
+
+        // A reminder holds a signal index, and a reload can reorder the list out
+        // from under it. Repeating whatever now sits at that index would show
+        // the wrong message, so drop the reminder rather than risk it.
+        self.reminder = reminder_survives_reload(self.reminder, config);
 
         // A running animation keeps going when the new config still has the
         // same signal in the same place showing the same animation, which is the
@@ -371,6 +447,56 @@ mod tests {
     use super::*;
     use crate::config::{Animation, AnimAsset, DisplayMode, OnComplete, Signal};
     use std::path::PathBuf;
+    use std::time::Duration;
+
+    fn reminding(every: Option<u64>) -> Signal {
+        Signal { remind: every, ..signal(None) }
+    }
+
+    #[test]
+    fn a_signal_with_no_remind_is_never_reminded() {
+        assert_eq!(reminder_after(&reminding(None)), None);
+        assert_eq!(reminder_after(&reminding(Some(0))), None, "0 means off");
+    }
+
+    fn at(idx: usize, secs: u64) -> Option<Reminder> {
+        Some(Reminder { signal_idx: idx, every: Duration::from_secs(secs) })
+    }
+
+    #[test]
+    fn showing_a_reminding_signal_arms_its_reminder() {
+        assert_eq!(reminder_for(Some(2), &reminding(Some(60))), at(2, 60));
+    }
+
+    #[test]
+    fn showing_a_signal_without_remind_clears_a_previous_reminder() {
+        // The failure this prevents is a reminder outliving its signal, so that
+        // a later battery change re-shows a message about something that stopped
+        // being true.
+        assert_eq!(reminder_for(Some(2), &reminding(Some(60))), at(2, 60));
+        assert_eq!(reminder_for(Some(3), &reminding(None)), None);
+        assert_eq!(reminder_for(Some(3), &reminding(Some(0))), None);
+    }
+
+    #[test]
+    fn a_signal_with_no_index_cannot_be_reminded() {
+        assert_eq!(reminder_for(None, &reminding(Some(60))), None);
+    }
+
+    #[test]
+    fn a_reload_that_drops_the_signal_drops_the_reminder() {
+        let config = config_with(vec![signal(None), signal(None)]);
+        assert_eq!(reminder_survives_reload(at(1, 60), &config), at(1, 60));
+        // The list shrank, so index 5 is gone.
+        assert_eq!(reminder_survives_reload(at(5, 60), &config), None);
+        assert_eq!(reminder_survives_reload(None, &config), None);
+    }
+
+    #[test]
+    fn a_remind_becomes_that_many_seconds() {
+        assert_eq!(reminder_after(&reminding(Some(300))), Some(Duration::from_secs(300)));
+        assert_eq!(reminder_after(&reminding(Some(1))), Some(Duration::from_secs(1)));
+    }
 
     fn signal(anim_ref: Option<&str>) -> Signal {
         Signal {
@@ -385,6 +511,7 @@ mod tests {
             animation_ref: anim_ref.map(str::to_string),
             duration: Some(5),
             sound: None,
+            remind: None,
             actions: Vec::new(),
         }
     }

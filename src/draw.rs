@@ -767,6 +767,7 @@ mod tests {
             animation_ref: None,
             duration: Some(5),
             sound: None,
+            remind: None,
             actions: Vec::new(),
         }
     }

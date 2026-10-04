@@ -131,6 +131,19 @@ fn active_signal<'a>(
         .map(|idx| &config.signals[idx])
 }
 
+/// Parks or arms the reminder timer to match the state a reminder is in.
+///
+/// Arming a `Sleep` to the idle value rather than dropping it keeps the
+/// `select!` arm alive, so there is no way to leave a completed timer sitting
+/// there ready to fire every loop iteration.
+fn arm_reminder(
+    timer: &mut std::pin::Pin<Box<tokio::time::Sleep>>,
+    state: &NotificationState,
+) {
+    let delay = state.reminder.map_or(HIDE_TIMEOUT_SECS, |r| r.every.as_secs());
+    *timer = Box::pin(tokio::time::sleep(Duration::from_secs(delay)));
+}
+
 /// Points the frame clock at a new period.
 ///
 /// Sleeping for the frame period *after* drawing made the real period
@@ -363,6 +376,11 @@ async fn main() -> anyhow::Result<()> {
     let async_fd = AsyncFd::new(fd)?;
 
     let mut state = NotificationState::new();
+    // Armed when a notification hides and that signal asked to be reminded. The
+    // moment the card goes away is exactly when the reminder falls due, so it
+    // rides on the hide path rather than needing a timer of its own running.
+    let mut reminder_timer =
+        Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
     let mut hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
     let mut animation_timer = tokio::time::interval(frame_delay(&config));
     animation_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -561,6 +579,7 @@ async fn main() -> anyhow::Result<()> {
                         animation_ref: Some(frame_name.clone()),
                         duration: Some(30),
                         sound: None,
+                        remind: None,
                         actions: Vec::new(),
                     };
                     let text = config::format_text(
@@ -618,6 +637,7 @@ async fn main() -> anyhow::Result<()> {
                         animation_ref: None,
                         duration: Some(10),
                         sound: None,
+                        remind: None,
                         actions: Vec::new(),
                     };
 
@@ -752,6 +772,27 @@ async fn main() -> anyhow::Result<()> {
                 app.draw_text_with_signal(text, &config, Some(signal), &state.draw_state);
             }
 
+            _ = &mut reminder_timer, if state.reminder.is_some() => {
+                let Some(r) = state.reminder else { continue };
+                // The index is a position in a config that may have been reloaded
+                // since the reminder was armed.
+                let Some(sig) = config.signals.get(r.signal_idx) else {
+                    state.reminder = None;
+                    reminder_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
+                    continue;
+                };
+                println!("Reminding after {}", r.every.as_secs());
+                let idx = r.signal_idx;
+                let sig = sig.clone();
+                // Re-read rather than reusing the percentage from the first
+                // showing: the point of a reminder is that things may have got
+                // worse in the meantime.
+                let pct = dbus::battery_percentage_now().await;
+                let delay = state.show_reminder(&mut app, &config, idx, &sig, pct);
+                hide_timer = Box::pin(tokio::time::sleep(delay));
+                arm_reminder(&mut reminder_timer, &state);
+            }
+
             _ = &mut hide_timer => {
                 if state.current_text.is_some() {
                     let is_infinite = state.current_signal_idx
@@ -764,10 +805,17 @@ async fn main() -> anyhow::Result<()> {
                         println!("Auto-hiding");
                         let delay = state.hide_and_next(&mut app);
                         hide_timer = Box::pin(tokio::time::sleep(delay));
+                        arm_reminder(&mut reminder_timer, &state);
 
-                        if test_animation.is_some()
-                            || test_frame_anim_name.is_some()
-                            || test_signal_name.is_some()
+                        // A reminder outlives the card by design, so a test that
+                        // wants to watch one repeat has to keep the process
+                        // alive past the first hide. INNO_TEST_PERSIST says so.
+                        let persisting = std::env::var_os("INNO_TEST_PERSIST").is_some();
+
+                        if !persisting
+                            && (test_animation.is_some()
+                                || test_frame_anim_name.is_some()
+                                || test_signal_name.is_some())
                         {
                             println!("Specific test completed, exiting.");
                             break;

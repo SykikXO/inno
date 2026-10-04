@@ -167,6 +167,7 @@ background, and a 90px bottom margin.
 | | `animation` | `none` | Procedural transition, or the name of an `[animations]` entry |
 | | `animation_ref` | — | Name of an `[animations]` entry to play as the content |
 | | `duration` | derived | Seconds on screen. `0` stays until dismissed. Omitted derives it from the animation |
+| | `remind` | — | Seconds between repeats while this state persists. Omitted or `0` is off |
 | | `sound` | — | Sound file, relative to the config file |
 | | `[[signal.action]]` | — | A button on the card: `label` to draw, `command` to run |
 
@@ -371,6 +372,30 @@ animation_ref = "cube_charge"  # content is the cube
 `duration` is optional on every signal.
 
 - `duration = 0` — stays up until dismissed by click.
+
+### Reminders
+
+A notification that appears once can be missed, and missing one is how the
+charger stays plugged in for ten minutes after the thing said to unplug it
+sounded. `remind` repeats the notification until something says it was seen:
+
+```toml
+[[signal]]
+message = "BATTERY LOW"
+duration = 5
+remind = 180
+```
+
+That is one notification every three minutes for as long as the battery stays
+low. Off unless asked for, since repeating something nobody asked to repeat is
+its own kind of notification.
+
+Two things stop it. A click, which is the only way to acknowledge without waiting
+for the battery to change. And any real state change, because the next signal to
+show takes over and a signal without `remind` cancels whatever was repeating.
+
+Measured from when the notification was last shown, not from when it was
+dismissed, so `remind` shorter than `duration` repeats without a gap.
 
 ### Action buttons
 
