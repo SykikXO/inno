@@ -133,7 +133,19 @@ struct Layout {
     icon_ext: Option<cairo::TextExtents>,
     /// Extents of the body text at the configured font size.
     text_ext: cairo::TextExtents,
+    /// The action buttons, in surface-local coordinates so hit testing can use
+    /// them without knowing anything about how the card is padded.
+    buttons: Vec<Rect>,
 }
+
+/// Height of the action row, padding included. Zero when there are no actions,
+/// which keeps a signal without buttons laid out exactly as it was before
+/// buttons existed.
+const BUTTON_ROW_H: f64 = 26.0;
+/// Space between one button and the next, and around the row.
+const BUTTON_GAP: f64 = 8.0;
+/// Horizontal padding inside a button, either side of its label.
+const BUTTON_PAD: f64 = 12.0;
 
 /// Selects the font, measures the icon and the body text, and returns the card
 /// size. The measuring pass and the drawing pass both need this, and they were
@@ -149,8 +161,52 @@ fn layout(cr: &Context, text: &str, config: &AppConfig, signal: Option<&Signal>,
     cr.set_font_size(config.font_size * scale);
     let ext = cr.text_extents(text).unwrap();
 
-    let w = (ext.width().ceil() + 20.0 * scale + icon_w).ceil() as i32;
-    let h_content = ext.height().ceil() + 20.0 * scale;
+    let text_h = ext.height().ceil() + 20.0 * scale;
+    let text_w = (ext.width().ceil() + 20.0 * scale + icon_w).ceil() as i32;
+
+    // Buttons are laid out right to left on the bottom row, the way a native
+    // dialog does it, and the card grows to whatever they need. Measuring them
+    // here rather than at draw time is what keeps the measuring and drawing
+    // passes from disagreeing about how big the card is.
+    let actions = signal.map(|s| s.actions.as_slice()).unwrap_or(&[]);
+    let row_h = if actions.is_empty() { 0.0 } else { BUTTON_ROW_H * scale };
+    let mut buttons = Vec::with_capacity(actions.len());
+    let mut row_w = 0.0;
+    if !actions.is_empty() {
+        cr.set_font_size(config.font_size * 0.85 * scale);
+        for a in actions.iter().rev() {
+            let e = cr.text_extents(&a.label).unwrap();
+            let bw = (e.width() + BUTTON_PAD * 2.0 * scale).ceil();
+            row_w += bw;
+            buttons.push(Rect { x: 0, y: 0, w: bw as i32, h: row_h as i32 });
+        }
+        row_w += BUTTON_GAP * scale * (actions.len() - 1) as f64;
+    }
+
+    let w = text_w.max(row_w as i32 + 20);
+    // Right-aligned, with the same 10px inset the text uses. Measured from the
+    // card's width, not the text's: a short message with several buttons makes
+    // the row wider than the text, and insetting from the text width walks the
+    // leftmost button off the side of its own card and off the surface.
+    let mut x = w as f64 - 10.0 * scale - row_w;
+    for i in (0..actions.len()).rev() {
+        let b = buttons[i];
+        // Card-local, then shifted down by the half-padding above the card to get
+        // surface-local, which is the space pointer events are reported in.
+        buttons[i] = Rect {
+            x: x as i32,
+            // The row occupies the bottom row_h of the card, so its top is
+            // text_h, not the middle of the row. Adding half the height here
+            // pushed every button down by half its own height, leaving the hit
+            // test a strip lower than the pixels that were drawn.
+            y: (text_h + V_PADDING / 2.0 * scale) as i32,
+            w: b.w,
+            h: b.h,
+        };
+        x += b.w as f64 + BUTTON_GAP * scale;
+    }
+
+    let h_content = text_h + row_h;
     Layout {
         w,
         h_content,
@@ -158,6 +214,7 @@ fn layout(cr: &Context, text: &str, config: &AppConfig, signal: Option<&Signal>,
         icon_w,
         icon_ext,
         text_ext: ext,
+        buttons,
     }
 }
 
@@ -176,7 +233,8 @@ pub fn draw_with_signal(
     signal: Option<&Signal>,
     state: &DrawState,
     scale: f64,
-) -> (i32, i32) {
+    hovered_action: Option<usize>,
+) -> (i32, i32, Vec<Rect>) {
     let (r_bg, g_bg, b_bg, a_bg) = config.bg_color;
     let (r, g, b, a) = signal.map(|s| s.color).unwrap_or(config.text_color);
 
@@ -184,13 +242,16 @@ pub fn draw_with_signal(
         cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
         cr.set_operator(cairo::Operator::Source);
         cr.paint().unwrap();
-        return (1, 1);
+        return (1, 1, Vec::new());
     }
 
     let alpha = state.alpha;
 
-    let Layout { w, h, h_content, icon_w, icon_ext, text_ext: ext } =
+    let Layout { w, h, h_content, icon_w, icon_ext, text_ext: ext, buttons } =
         layout(cr, text, config, signal, scale);
+    // The text centres in the part of the card above the button row rather than
+    // in the whole card, or adding a button would visibly shift the message.
+    let text_h = h_content - BUTTON_ROW_H * scale * if buttons.is_empty() { 0.0 } else { 1.0 };
 
     cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
     cr.set_operator(cairo::Operator::Source);
@@ -223,7 +284,7 @@ pub fn draw_with_signal(
             cr.set_font_size(s.icon_size * scale);
             cr.move_to(
                 10.0 * scale - icon_ext.x_bearing(),
-                h_content / 2.0 - (icon_ext.height() / 2.0 + icon_ext.y_bearing()),
+                text_h / 2.0 - (icon_ext.height() / 2.0 + icon_ext.y_bearing()),
             );
             cr.show_text(&s.icon).unwrap();
             cr.set_font_size(config.font_size * scale);
@@ -233,10 +294,52 @@ pub fn draw_with_signal(
     };
 
     cr.set_source_rgba(r, g, b, a * alpha);
-    cr.move_to(text_x, h_content / 2.0 - (ext.height() / 2.0 + ext.y_bearing()));
+    cr.move_to(text_x, text_h / 2.0 - (ext.height() / 2.0 + ext.y_bearing()));
     cr.show_text(text).unwrap();
 
-    (w, h)
+    if !buttons.is_empty() {
+        let actions = signal.map(|s| s.actions.as_slice()).unwrap_or(&[]);
+        let radius = config.border_radius * scale;
+        for (i, (btn, act)) in buttons.iter().zip(actions).enumerate() {
+            // The card was translated down by half the padding when it started
+            // drawing, and the button rects came back out in surface-local, so
+            // undo the shift to get back to card-local for drawing.
+            let bx = btn.x as f64;
+            let by = btn.y as f64 - V_PADDING / 2.0 * scale;
+            let bw = btn.w as f64;
+            let bh = btn.h as f64;
+
+            // The first action is the one a person is expected to take, so it
+            // gets the accent fill and the rest stay quiet until hovered.
+            let primary = i == 0;
+            let hovered = hovered_action == Some(i);
+            let fill = if hovered || primary { 1.0 } else { 0.14 };
+            cr.set_source_rgba(r, g, b, a * alpha * fill);
+            if radius > 0.0 {
+                rounded_rect(cr, bx, by, bw, bh, radius);
+            } else {
+                cr.rectangle(bx, by, bw, bh);
+            }
+            cr.fill().unwrap();
+
+            let fg = if hovered || primary {
+                (r_bg, g_bg, b_bg, a_bg)
+            } else {
+                (r, g, b, a)
+            };
+            cr.set_source_rgba(fg.0, fg.1, fg.2, fg.3 * alpha);
+            cr.set_font_size(config.font_size * 0.85 * scale);
+            let le = cr.text_extents(&act.label).unwrap();
+            cr.move_to(
+                bx + (bw - le.width()) / 2.0 - le.x_bearing(),
+                by + bh / 2.0 - (le.height() / 2.0 + le.y_bearing()),
+            );
+            cr.show_text(&act.label).unwrap();
+        }
+        cr.set_font_size(config.font_size * scale);
+    }
+
+    (w, h, buttons)
 }
 
 #[cfg(test)]
@@ -304,6 +407,95 @@ mod tests {
         let r = card_rect(10, 4, 1.0);
         assert_eq!(r.h, 0);
         assert!(r.is_empty());
+    }
+
+    fn with_actions(labels: &[&str]) -> config::Signal {
+        config::Signal {
+            actions: labels
+                .iter()
+                .map(|l| config::Action { label: (*l).into(), command: "true".into() })
+                .collect(),
+            ..test_signal()
+        }
+    }
+
+    fn layout_for(signal: Option<&config::Signal>, scale: f64) -> Layout {
+        let cr = cairo::Context::new(
+            cairo::ImageSurface::create(cairo::Format::ARgb32, 1, 1).unwrap(),
+        )
+        .unwrap();
+        layout(&cr, "BATTERY LOW", &test_config(), signal, scale)
+    }
+
+    #[test]
+    fn a_signal_without_actions_gets_no_buttons_and_the_same_size() {
+        let bare = layout_for(None, 1.0);
+        let with_none = layout_for(Some(&test_signal()), 1.0);
+        assert!(bare.buttons.is_empty());
+        assert!(with_none.buttons.is_empty());
+        assert_eq!((bare.w, bare.h_content), (with_none.w, with_none.h_content));
+    }
+
+    #[test]
+    fn buttons_stay_inside_the_card_even_when_the_row_is_wider_than_the_text() {
+        // A short message with several buttons makes the row wider than the text.
+        // Insetting the row from the text width instead of the card width walks
+        // the leftmost button off the side of the card, which is how a button
+        // ended up at x = -78 and became impossible to click.
+        let l = layout_for(Some(&with_actions(&["Plug in", "Snooze", "Ignore"])), 1.0);
+        assert_eq!(l.buttons.len(), 3);
+        for b in &l.buttons {
+            assert!(b.x >= 0, "button starts inside the card, got x = {}", b.x);
+            assert!(
+                b.x + b.w <= l.w,
+                "button ends inside the card, got {} > {}",
+                b.x + b.w,
+                l.w
+            );
+        }
+    }
+
+    #[test]
+    fn buttons_do_not_overlap_and_keep_their_order() {
+        let l = layout_for(Some(&with_actions(&["Plug in", "Snooze", "Ignore"])), 1.0);
+        // The array is in declaration order and the row is right-aligned, so the
+        // first declared button is the rightmost one. That ordering is what lets
+        // the hit test report an index that means the same action it did in the
+        // config.
+        for pair in l.buttons.windows(2) {
+            assert!(
+                pair[1].x + pair[1].w <= pair[0].x,
+                "each button sits left of the one before it, with a gap"
+            );
+        }
+        assert_eq!(l.buttons.len(), 3);
+        assert!(l.buttons.iter().all(|b| !b.is_empty()));
+        // Right-aligned: the first declared one ends 10px from the card edge.
+        let right_gap = l.w - (l.buttons[0].x + l.buttons[0].w);
+        assert!((right_gap - 10).abs() <= 1, "right inset, got {right_gap}");
+    }
+
+    #[test]
+    fn buttons_grow_the_card_downward_by_exactly_one_row() {
+        let bare = layout_for(None, 1.0);
+        let with = layout_for(Some(&with_actions(&["Plug in"])), 1.0);
+        let row = (BUTTON_ROW_H * 1.0) as i64;
+        assert_eq!(with.h_content as i64 - bare.h_content as i64, row);
+        // And they sit below the text, inside the card.
+        let b = with.buttons[0];
+        assert!(b.y as f64 >= V_PADDING / 2.0, "below the transition padding");
+        assert!(
+            (b.y + b.h) as f64 <= V_PADDING / 2.0 + with.h_content + 1.0,
+            "button row ends inside the card"
+        );
+    }
+
+    #[test]
+    fn button_rects_scale_with_the_notification() {
+        let one = layout_for(Some(&with_actions(&["Plug in"])), 1.0);
+        let two = layout_for(Some(&with_actions(&["Plug in"])), 2.0);
+        assert_eq!(two.buttons[0].h as f64, one.buttons[0].h as f64 * 2.0);
+        assert!(two.buttons[0].w > one.buttons[0].w);
     }
 
     #[test]
@@ -575,6 +767,7 @@ mod tests {
             animation_ref: None,
             duration: Some(5),
             sound: None,
+            actions: Vec::new(),
         }
     }
 
@@ -632,9 +825,9 @@ mod tests {
     fn test_draw_with_signal_reports_its_dimensions() {
         let cfg = test_config();
         let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 800, 300).unwrap();
-        let (w, h) = {
+        let (w, h, _) = {
             let cr = cairo::Context::new(&surface).unwrap();
-            draw_with_signal(&cr, "hello", &cfg, Some(&test_signal()), &DrawState::default(), 1.0)
+            draw_with_signal(&cr, "hello", &cfg, Some(&test_signal()), &DrawState::default(), 1.0, None)
         };
         assert_eq!((w, h), measure_text("hello", &cfg, Some(&test_signal()), 1.0));
     }
@@ -650,7 +843,7 @@ mod tests {
         let cr = cairo::Context::new(&surface).unwrap();
         let state = DrawState { visible: false, ..Default::default() };
 
-        let (w, h) = draw_with_signal(&cr, "hello", &cfg, Some(&signal), &state, 1.0);
+        let (w, h, _) = draw_with_signal(&cr, "hello", &cfg, Some(&signal), &state, 1.0, None);
         assert_eq!((w, h), (1, 1));
     }
 
@@ -661,9 +854,9 @@ mod tests {
         let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 600, 300).unwrap();
 
         // Empty text so the sample lands on background rather than a glyph.
-        let (w, h) = {
+        let (w, h, _) = {
             let cr = cairo::Context::new(&surface).unwrap();
-            draw_with_signal(&cr, "", &cfg, Some(&test_signal()), &DrawState::default(), 1.0)
+            draw_with_signal(&cr, "", &cfg, Some(&test_signal()), &DrawState::default(), 1.0, None)
         };
         surface.flush();
 
@@ -689,9 +882,9 @@ mod tests {
     fn test_draw_with_signal_leaves_outside_the_card_clear() {
         let cfg = test_config();
         let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 600, 300).unwrap();
-        let (w, _) = {
+        let (w, _, _) = {
             let cr = cairo::Context::new(&surface).unwrap();
-            draw_with_signal(&cr, "hello", &cfg, Some(&test_signal()), &DrawState::default(), 1.0)
+            draw_with_signal(&cr, "hello", &cfg, Some(&test_signal()), &DrawState::default(), 1.0, None)
         };
         surface.flush();
 

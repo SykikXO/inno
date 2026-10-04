@@ -168,6 +168,7 @@ background, and a 90px bottom margin.
 | | `animation_ref` | — | Name of an `[animations]` entry to play as the content |
 | | `duration` | derived | Seconds on screen. `0` stays until dismissed. Omitted derives it from the animation |
 | | `sound` | — | Sound file, relative to the config file |
+| | `[[signal.action]]` | — | A button on the card: `label` to draw, `command` to run |
 
 `{message}` inside a signal's `message` expands to the text the event carried,
 and `general.format` then wraps the result. The two templates have separate
@@ -370,6 +371,35 @@ animation_ref = "cube_charge"  # content is the cube
 `duration` is optional on every signal.
 
 - `duration = 0` — stays up until dismissed by click.
+
+### Action buttons
+
+A signal can carry buttons. Clicking one runs its command instead of dismissing
+the notification, and each is a separate clickable region:
+
+```toml
+[[signal]]
+message = "BATTERY LOW"
+duration = 30
+
+[[signal.action]]
+label = "Plug in"
+command = "hyprctl dispatch exec 'notify-send power getAC'"
+
+[[signal.action]]
+label = "Snooze"
+command = "systemctl suspend"
+```
+
+The row is right-aligned under the message, first declared button rightmost, and
+the card grows to fit. The first one is filled, since it is the action you are
+meant to take, and hovering one brightens it.
+
+inno does not serve `org.freedesktop.Notifications`, so there is no sending
+application to be told a choice was made. The command runs locally and that is
+all that happens. This is the same level of trust as `sound`, which already spawns
+a process named in this file. Commands are run through `sh -c` without waiting, so
+a slow one cannot freeze the notification.
 
 Clicks only count on the card you can see. The notification is a surface taller
 than the card, with room above and below for the animation to move through, and

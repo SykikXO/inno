@@ -452,8 +452,42 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
+        // A hovered button is baked into the cached card, so moving onto or off
+        // one has to force a redraw. Cheap: it only happens when the pointer
+        // crosses into a different button, not on every motion event.
+        if app.hover_dirty {
+            app.hover_dirty = false;
+            if let Some(text) = state.current_text.clone() {
+                let signal = active_signal(&state, &config, current_test_signal.as_ref()).cloned();
+                app.draw_text_with_signal(&text, &config, signal.as_ref(), &state.draw_state);
+            }
+        }
+
         if app.clicked {
             app.clicked = false;
+            // An action runs instead of dismissing. It is the same trust level
+            // as the sound field, which already spawns a process named in this
+            // config, and it is spawned without waiting so a slow command cannot
+            // freeze the notification loop.
+            if let Some(idx) = app.clicked_action.take()
+                && let Some(command) = state
+                    .current_signal_idx
+                    .and_then(|i| config.signals.get(i))
+                    .and_then(|sig| sig.actions.get(idx))
+                    .map(|a| a.command.clone())
+            {
+                println!("Running action '{}'", command);
+                tokio::task::spawn_blocking(move || {
+                    let _ = std::process::Command::new("sh")
+                        .arg("-c")
+                        .arg(&command)
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn();
+                });
+                continue;
+            }
+            app.clicked_action = None;
             state.dismiss_by_click(&mut app);
             hide_timer = Box::pin(tokio::time::sleep(Duration::from_secs(HIDE_TIMEOUT_SECS)));
             if test_animation.is_some()
@@ -527,6 +561,7 @@ async fn main() -> anyhow::Result<()> {
                         animation_ref: Some(frame_name.clone()),
                         duration: Some(30),
                         sound: None,
+                        actions: Vec::new(),
                     };
                     let text = config::format_text(
                         &config.format,
@@ -583,6 +618,7 @@ async fn main() -> anyhow::Result<()> {
                         animation_ref: None,
                         duration: Some(10),
                         sound: None,
+                        actions: Vec::new(),
                     };
 
                     let text = config::format_text(

@@ -73,6 +73,21 @@ struct SignalConfig {
     sound: Option<String>,
     #[serde(default)]
     animation_ref: Option<String>,
+    /// Buttons drawn on the card. Clicking one runs its command instead of
+    /// dismissing the notification.
+    ///
+    /// Renamed because the TOML reads `[[signal.action]]`, which is what the
+    /// notification spec calls these, and a reader should not have to know that
+    /// serde matches the field name exactly to find out why theirs did not load.
+    #[serde(default, rename = "action")]
+    actions: Vec<ActionConfig>,
+}
+
+/// A button on a notification: a label to draw and a command to run.
+#[derive(Debug, Clone, Deserialize)]
+struct ActionConfig {
+    label: String,
+    command: String,
 }
 
 // Runtime config structures
@@ -425,6 +440,19 @@ pub struct Signal {
     pub animation_ref: Option<String>,
     pub duration: Option<u64>,
     pub sound: Option<PathBuf>,
+    pub actions: Vec<Action>,
+}
+
+/// A button on a notification.
+///
+/// inno does not serve `org.freedesktop.Notifications`, so there is no sending
+/// application to hand a choice back to. The only thing an action can do is run
+/// something named in the config, which is the same level of trust the existing
+/// `sound` field already asks for: it spawns a process.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Action {
+    pub label: String,
+    pub command: String,
 }
 
 #[derive(Debug, Clone)]
@@ -776,6 +804,11 @@ impl AppConfig {
                 animation_ref,
                 duration: sig_cfg.duration,
                 sound: sound_path,
+                actions: sig_cfg
+                    .actions
+                    .into_iter()
+                    .map(|a| Action { label: a.label, command: a.command })
+                    .collect(),
             };
             self.signals.push(signal);
         }
@@ -963,6 +996,49 @@ mod tests {
     use super::*;
     use crate::state::{DEFAULT_DURATION_SECS, display_seconds, notification_duration, transition_frames};
     use crate::testutil::TempDir;
+
+    #[test]
+    fn actions_are_read_in_order_with_their_commands() {
+        let (cfg, _t) = load_fixture(
+            r#"
+[[signal]]
+message = "low"
+icon = ""
+color = "white"
+threshold = 0
+state = "any"
+
+[[signal.action]]
+label = "Plug in"
+command = "notify-send hi"
+
+[[signal.action]]
+label = "Ignore"
+command = "true"
+"#,
+        );
+        assert_eq!(cfg.signals.len(), 1);
+        let actions = &cfg.signals[0].actions;
+        assert_eq!(actions.len(), 2, "both actions parsed");
+        assert_eq!(actions[0].label, "Plug in", "order is preserved");
+        assert_eq!(actions[0].command, "notify-send hi");
+        assert_eq!(actions[1].label, "Ignore");
+    }
+
+    #[test]
+    fn a_signal_without_actions_has_none() {
+        let (cfg, _t) = load_fixture(
+            r#"
+[[signal]]
+message = "low"
+icon = ""
+color = "white"
+threshold = 0
+state = "any"
+"#,
+        );
+        assert!(cfg.signals[0].actions.is_empty());
+    }
 
     /// Writes a config file into a temp dir and loads it. `load_toml` takes an
     /// explicit path, so this needs no environment.
@@ -1179,6 +1255,7 @@ anchor = "bottom-cener"
                     animation: Animation::None,
                     duration: Some(5),
                     sound: None,
+                    actions: Vec::new(),
                     animation_ref: None,
                 },
                 Signal {
@@ -1192,6 +1269,7 @@ anchor = "bottom-cener"
                     animation: Animation::None,
                     duration: Some(5),
                     sound: None,
+                    actions: Vec::new(),
                     animation_ref: None,
                 },
                 Signal {
@@ -1205,6 +1283,7 @@ anchor = "bottom-cener"
                     animation: Animation::None,
                     duration: Some(5),
                     sound: None,
+                    actions: Vec::new(),
                     animation_ref: None,
                 },
             ],
@@ -1232,6 +1311,7 @@ anchor = "bottom-cener"
                     animation: Animation::None,
                     duration: Some(5),
                     sound: None,
+                    actions: Vec::new(),
                     animation_ref: None,
                 },
                 Signal {
@@ -1245,6 +1325,7 @@ anchor = "bottom-cener"
                     animation: Animation::None,
                     duration: Some(5),
                     sound: None,
+                    actions: Vec::new(),
                     animation_ref: None,
                 },
             ],
@@ -1270,6 +1351,7 @@ anchor = "bottom-cener"
                 animation: Animation::None,
                 duration: Some(5),
                 sound: None,
+                actions: Vec::new(),
                 animation_ref: None,
             }],
             ..Default::default()
@@ -1331,6 +1413,7 @@ anchor = "bottom-cener"
                 animation: Animation::None,
                 duration: Some(5),
                 sound: None,
+                actions: Vec::new(),
                 animation_ref: None,
             }],
             ..Default::default()
@@ -1353,6 +1436,7 @@ anchor = "bottom-cener"
                 animation: Animation::None,
                 duration: Some(0),
                 sound: None,
+                actions: Vec::new(),
                 animation_ref: None,
             }],
             ..Default::default()
@@ -1375,6 +1459,7 @@ anchor = "bottom-cener"
                 animation: Animation::None,
                 duration: Some(5),
                 sound: None,
+                actions: Vec::new(),
                 animation_ref: None,
             }],
             fps: 30,
@@ -1400,6 +1485,7 @@ anchor = "bottom-cener"
                 animation: Animation::None,
                 duration: Some(5),
                 sound: None,
+                actions: Vec::new(),
                 animation_ref: None,
             }],
             ..Default::default()
@@ -1423,6 +1509,7 @@ anchor = "bottom-cener"
                 animation: Animation::None,
                 duration: Some(5),
                 sound: None,
+                actions: Vec::new(),
                 animation_ref: None,
             }],
             ..Default::default()
@@ -1451,6 +1538,7 @@ anchor = "bottom-cener"
                 animation: Animation::None,
                 duration: Some(5),
                 sound: None,
+                actions: Vec::new(),
                 animation_ref: None,
             }],
             ..Default::default()
@@ -1507,6 +1595,7 @@ anchor = "bottom-cener"
                 animation: Animation::None,
                 duration: Some(5),
                 sound: None,
+                actions: Vec::new(),
                 animation_ref: None,
             }],
             ..Default::default()
@@ -1531,6 +1620,7 @@ anchor = "bottom-cener"
                 animation: Animation::None,
                 duration: Some(5),
                 sound: None,
+                actions: Vec::new(),
                 animation_ref: None,
             }],
             ..Default::default()
@@ -1562,6 +1652,7 @@ anchor = "bottom-cener"
                 animation: Animation::None,
                 duration: Some(5),
                 sound: None,
+                actions: Vec::new(),
                 animation_ref: None,
             }],
             ..Default::default()
@@ -1586,6 +1677,7 @@ anchor = "bottom-cener"
                 animation: Animation::None,
                 duration: Some(5),
                 sound: None,
+                actions: Vec::new(),
                 animation_ref: None,
             }],
             ..Default::default()
@@ -1611,6 +1703,7 @@ anchor = "bottom-cener"
                 animation: Animation::None,
                 duration: Some(5),
                 sound: None,
+                actions: Vec::new(),
                 animation_ref: None,
             }],
             ..Default::default()
@@ -1669,6 +1762,7 @@ anchor = "bottom-cener"
                 animation: Animation::None,
                 duration: Some(5),
                 sound: None,
+                actions: Vec::new(),
                 animation_ref: None,
             }],
             ..Default::default()
@@ -1691,6 +1785,7 @@ anchor = "bottom-cener"
                 animation: Animation::None,
                 duration: Some(5),
                 sound: None,
+                actions: Vec::new(),
                 animation_ref: None,
             }],
             ..Default::default()
@@ -1714,6 +1809,7 @@ anchor = "bottom-cener"
                 animation: Animation::None,
                 duration: Some(5),
                 sound: None,
+                actions: Vec::new(),
                 animation_ref: None,
             }],
             ..Default::default()
@@ -1809,6 +1905,7 @@ anchor = "bottom-cener"
             animation_ref: Some("typo".into()),
             duration: Some(5),
             sound: None,
+            actions: Vec::new(),
         }];
         let (errors, _) = config.validate();
         assert!(
@@ -1915,6 +2012,7 @@ cube = { source = "assets", on_complete = "explode" }
             animation_ref: anim_ref.map(str::to_string),
             duration,
             sound: None,
+            actions: Vec::new(),
         }
     }
 

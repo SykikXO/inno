@@ -44,6 +44,12 @@ struct RenderKey {
     border_radius: f64,
     gradient: bool,
     scale: f64,
+    /// Labels and commands, because a config reload that changes what a button
+    /// does has to redraw it even though the message is identical.
+    actions: Vec<(String, String)>,
+    /// Which action the pointer is over. Present so that moving onto a button
+    /// redraws the card once, rather than every motion event repainting.
+    hovered: Option<usize>,
 }
 
 /// Sets all four margins from the anchor, scaled. The compositor honours the
@@ -70,7 +76,13 @@ fn set_margins(layer: &LayerSurface, config: &AppConfig, s: f64) {
     );
 }
 
-fn render_key(text: &str, config: &AppConfig, signal: Option<&Signal>, scale: f64) -> RenderKey {
+fn render_key(
+    text: &str,
+    config: &AppConfig,
+    signal: Option<&Signal>,
+    scale: f64,
+    hovered: Option<usize>,
+) -> RenderKey {
     RenderKey {
         text: text.to_string(),
         signal_icon: signal.map(|s| s.icon.clone()).unwrap_or_default(),
@@ -85,6 +97,10 @@ fn render_key(text: &str, config: &AppConfig, signal: Option<&Signal>, scale: f6
         border_radius: config.border_radius,
         gradient: config.gradient,
         scale,
+        actions: signal
+            .map(|s| s.actions.iter().map(|a| (a.label.clone(), a.command.clone())).collect())
+            .unwrap_or_default(),
+        hovered,
     }
 }
 
@@ -186,6 +202,15 @@ pub struct LayerApp {
     /// coordinates. Empty means the surface is not clickable at all, which is
     /// the correct answer for a hidden notification.
     interactive: Vec<Rect>,
+    /// The action buttons currently drawn, in surface-local coordinates.
+    buttons: Vec<Rect>,
+    /// The action the pointer is over, if any.
+    pub hovered_action: Option<usize>,
+    /// Set by the pointer handler when a press landed on an action rather than
+    /// on the card, which decides what the main loop does with it.
+    pub clicked_action: Option<usize>,
+    /// Set when the hovered action changed and the cached card is stale.
+    pub hover_dirty: bool,
 }
 
 impl LayerApp {
@@ -216,6 +241,10 @@ impl LayerApp {
             pointer: None,
             clicked: false,
             interactive: Vec::new(),
+            buttons: Vec::new(),
+            hovered_action: None,
+            clicked_action: None,
+            hover_dirty: false,
             frame_cache: FrameCache::new(),
             anim_players: HashMap::new(),
             failed_animations: std::collections::HashSet::new(),
@@ -547,7 +576,7 @@ impl LayerApp {
         signal: Option<&Signal>,
         scale: f64,
     ) -> bool {
-        let key = render_key(text, config, signal, scale);
+        let key = render_key(text, config, signal, scale, self.hovered_action);
         if self.frame_cache.matches(&key) {
             return true;
         }
@@ -669,8 +698,23 @@ impl LayerApp {
         // composites and two commits to display one image.
         let Ok(surface) = cairo::ImageSurface::create(cairo::Format::ARgb32, w, h) else { return };
         let cr = cairo::Context::new(&surface).expect("cairo context");
-        draw::draw_with_signal(&cr, text, config, signal, &DrawState::default(), scale);
+        let (_, _, buttons) = draw::draw_with_signal(
+            &cr,
+            text,
+            config,
+            signal,
+            &DrawState::default(),
+            scale,
+            self.hovered_action,
+        );
         surface.flush();
+        // The layout is what produced the buttons, so take the hit test rectangles
+        // from the same pass that drew them rather than measuring them again and
+        // hoping the two agree.
+        if !buttons.is_empty() && self.buttons != buttons {
+            eprintln!("inno: card buttons at {buttons:?} in surface-local coordinates");
+        }
+        self.buttons = buttons;
 
         self.frame_cache.surface = Some(surface);
         self.frame_cache.key = Some(key);
@@ -915,6 +959,11 @@ impl SeatHandler for LayerApp {
 /// BTN_LEFT from linux/input-event-codes.h.
 const BTN_LEFT: u32 = 0x110;
 
+/// Which action, if any, a surface-local point lands on.
+fn action_at(buttons: &[Rect], x: f64, y: f64) -> Option<usize> {
+    buttons.iter().position(|b| b.contains(x, y))
+}
+
 impl PointerHandler for LayerApp {
     fn pointer_frame(
         &mut self,
@@ -923,24 +972,47 @@ impl PointerHandler for LayerApp {
         _pointer: &wl_pointer::WlPointer,
         events: &[smithay_client_toolkit::seat::pointer::PointerEvent],
     ) {
+        let mut hover_changed = false;
         for event in events {
-            if let smithay_client_toolkit::seat::pointer::PointerEventKind::Press {
-                button,
-                ..
-            } = &event.kind
-                && *button == BTN_LEFT {
-                let (x, y) = event.position;
-                // The compositor only routes a press here if it landed inside
-                // the input region, so this is also the assertion that the
-                // region and the hit test agree about where the card is.
-                let hit = self
-                    .interactive
-                    .iter()
-                    .position(|r| r.contains(x, y))
-                    .unwrap_or(usize::MAX);
-                eprintln!("inno: click at surface-local ({x:.0}, {y:.0}) hit {hit}");
-                self.clicked = true;
+            let (x, y) = event.position;
+            match &event.kind {
+                smithay_client_toolkit::seat::pointer::PointerEventKind::Enter { .. }
+                | smithay_client_toolkit::seat::pointer::PointerEventKind::Motion { .. } => {
+                    // Only a change of button redraws. Redrawing per motion event
+                    // would re-render the whole card at the pointer's refresh rate
+                    // for nothing, since most motion is still over the same one.
+                    let now = action_at(&self.buttons, x, y);
+                    if now != self.hovered_action {
+                        self.hovered_action = now;
+                        hover_changed = true;
+                    }
+                }
+                smithay_client_toolkit::seat::pointer::PointerEventKind::Leave { .. } => {
+                    if self.hovered_action.take().is_some() {
+                        hover_changed = true;
+                    }
+                }
+                smithay_client_toolkit::seat::pointer::PointerEventKind::Press { button, .. }
+                    if *button == BTN_LEFT =>
+                {
+                    // The compositor only routes a press here if it landed inside
+                    // the input region, so this is also the assertion that the
+                    // region and the hit test agree about where the card is.
+                    let on_card = self.interactive.iter().any(|r| r.contains(x, y));
+                    let action = action_at(&self.buttons, x, y);
+                    eprintln!(
+                        "inno: click at surface-local ({x:.0}, {y:.0})                          on_card={on_card} action={action:?}"
+                    );
+                    self.clicked_action = action;
+                    self.clicked = true;
+                }
+                _ => {}
             }
+        }
+        if hover_changed {
+            // The card is cached as a bitmap, so a change of hover only shows up
+            // if something asks for a redraw.
+            self.hover_dirty = true;
         }
     }
 }
@@ -997,6 +1069,8 @@ mod tests {
             font_weight: FontWeight::Normal,
             bg_color: (0.0, 0.0, 0.0, 0.6),
             text_color: (1.0, 1.0, 1.0, 1.0),
+            actions: Vec::new(),
+            hovered: None,
             border_radius: 0.0,
             gradient: false,
             scale: 1.0,
@@ -1018,6 +1092,8 @@ mod tests {
             font_weight: FontWeight::Normal,
             bg_color: (0.0, 0.0, 0.0, 0.6),
             text_color: (1.0, 1.0, 1.0, 1.0),
+            actions: Vec::new(),
+            hovered: None,
             border_radius: 0.0,
             gradient: false,
             scale: 1.0,
@@ -1039,6 +1115,8 @@ mod tests {
             font_weight: FontWeight::Normal,
             bg_color: (0.0, 0.0, 0.0, 0.6),
             text_color: (1.0, 1.0, 1.0, 1.0),
+            actions: Vec::new(),
+            hovered: None,
             border_radius: 0.0,
             gradient: false,
             scale: 1.0,
@@ -1069,6 +1147,8 @@ mod tests {
             font_weight: FontWeight::Normal,
             bg_color: (0.0, 0.0, 0.0, 0.6),
             text_color: (1.0, 1.0, 1.0, 1.0),
+            actions: Vec::new(),
+            hovered: None,
             border_radius: 0.0,
             gradient: false,
             scale: 1.0,
@@ -1100,6 +1180,8 @@ mod tests {
             font_weight: FontWeight::Normal,
             bg_color: (0.0, 0.0, 0.0, 0.6),
             text_color: (1.0, 1.0, 1.0, 1.0),
+            actions: Vec::new(),
+            hovered: None,
             border_radius: 0.0,
             gradient: false,
             scale: 1.0,

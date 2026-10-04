@@ -385,6 +385,7 @@ mod tests {
             animation_ref: anim_ref.map(str::to_string),
             duration: Some(5),
             sound: None,
+            actions: Vec::new(),
         }
     }
 
