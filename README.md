@@ -17,7 +17,7 @@ Inno is a lightweight, event-driven notification agent for Wayland, written in R
 - **Bring your own frames** — point `source` at a directory of PNGs, any resolution
 - **Sound with fallback** — probes `pw-play`, `paplay`, `ffplay`, `mpv` at startup and caches the winner
 - **Config reload** — edit `inno.toml` and it applies, including swapping a frame animation's rate mid-playback
-- **Click to dismiss**, **HiDPI aware**, **multi-battery aggregation**
+- **Click to dismiss** (only on the visible card, clicks pass through elsewhere), **HiDPI aware**, **multi-battery aggregation**
 - **`--check-config`** — validates config, animations and event files without starting
 
 ## Quick Start
@@ -370,6 +370,14 @@ animation_ref = "cube_charge"  # content is the cube
 `duration` is optional on every signal.
 
 - `duration = 0` — stays up until dismissed by click.
+
+Clicks only count on the card you can see. The notification is a surface taller
+than the card, with room above and below for the animation to move through, and
+a surface starts out accepting clicks over all of it. That would swallow clicks
+aimed at the window underneath, in a region where there is visibly nothing to
+click, so the input region is set to the card instead. A click on the card
+dismisses; a click anywhere else goes through to whatever is underneath, as if
+the notification were not there.
 - `duration = <seconds>` — explicit, with a half-second tail so a transition
   still playing when the timer expires is not cut off mid-frame.
 - omitted, with a frame animation — derived from the frame count and rate, so
@@ -612,7 +620,7 @@ OPTIONS:
     --daemon                Run in background, re-executing itself with
                             --internal-daemon
     -l, --log-file <PATH>   Log output to file (use with --daemon)
-    --no-dbus               Disable DBus control interface
+    --no-dbus               Disable DBus: no control interface, no event listeners
     --no-sound              Disable notification sounds
     --test <number>         Preview one procedural transition (1-6)
     --test-animations       Cycle through all procedural transitions

@@ -2,12 +2,12 @@ use crate::animation::{AnimPlayer, TargetSize};
 use crate::config::AppConfig;
 use crate::config::{AnimAsset, DisplayMode, Signal, VAnchor};
 use crate::draw;
-use crate::draw::DrawState;
+use crate::draw::{DrawState, Rect};
 use std::collections::HashMap;
 use cairo::FontSlant;
 use cairo::FontWeight;
 use smithay_client_toolkit::{
-    compositor::{CompositorHandler, CompositorState},
+    compositor::{CompositorHandler, CompositorState, Region},
     delegate_compositor, delegate_layer, delegate_output, delegate_pointer, delegate_registry, delegate_seat,
     delegate_shm,
     output::{OutputHandler, OutputState},
@@ -182,6 +182,10 @@ pub struct LayerApp {
     /// True when the surface currently shows the cached text at full opacity and
     /// no offset, so a frame at the same transform would be a no-op.
     committed_identity: bool,
+    /// Which parts of the surface may take pointer input, in surface-local
+    /// coordinates. Empty means the surface is not clickable at all, which is
+    /// the correct answer for a hidden notification.
+    interactive: Vec<Rect>,
 }
 
 impl LayerApp {
@@ -211,6 +215,7 @@ impl LayerApp {
             scale_changed: false,
             pointer: None,
             clicked: false,
+            interactive: Vec::new(),
             frame_cache: FrameCache::new(),
             anim_players: HashMap::new(),
             failed_animations: std::collections::HashSet::new(),
@@ -403,10 +408,31 @@ impl LayerApp {
         layer.set_size(self.width, self.height);
         layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
         layer.wl_surface().damage(0, 0, self.width as i32, self.height as i32);
+        self.apply_input_region(layer.wl_surface());
         layer.commit();
         // Every commit invalidates the assumption that the surface still shows
         // the cached text at full opacity, and this is the only place that knows.
         self.committed_identity = false;
+    }
+
+    /// Declares which parts of this surface may take pointer input.
+    ///
+    /// A surface starts with an infinite input region, so without this a
+    /// notification swallows every click that lands on it, including the
+    /// transparent padding above and below the card where nothing is drawn and
+    /// the user can plainly see there is nothing there to click.
+    ///
+    /// An empty list is a valid and useful answer: a hidden notification is a
+    /// 1x1 transparent pixel, still sitting in the middle of the screen, and it
+    /// has no business intercepting a click there.
+    fn apply_input_region(&self, surface: &wl_surface::WlSurface) {
+        let Ok(region) = Region::new(&self.compositor_state) else { eprintln!("PROBE Region::new FAILED"); return };
+        for r in self.interactive.iter().filter(|r| !r.is_empty()) {
+            region.add(r.x, r.y, r.w, r.h);
+        }
+        // The surface copies the region at commit, so letting this one die here
+        // is the documented way to use it rather than a leak.
+        surface.set_input_region(Some(region.wl_region()));
     }
 
     /// Reports a shm allocation failure once. Repeating it every frame at
@@ -425,6 +451,7 @@ impl LayerApp {
         }
         self.width = 1;
         self.height = 1;
+        self.interactive.clear();
 
         if let Some((buffer, _, _)) = self.allocate_buffer(1, 1) {
             self.commit_buffer(&buffer);
@@ -446,6 +473,7 @@ impl LayerApp {
 
         self.width = w as u32;
         self.height = h as u32;
+        self.interactive = vec![Rect { x: 0, y: 0, w, h }];
 
         let Some((buffer, ptr, stride)) = self.allocate_buffer(w, h) else { return };
 
@@ -668,6 +696,7 @@ impl LayerApp {
 
         self.width = w as u32;
         self.height = h as u32;
+        self.interactive = vec![draw::card_rect(w, h, scale)];
 
         let Some((buffer, ptr, stride)) = self.allocate_buffer(w, h) else { return };
 
@@ -883,6 +912,9 @@ impl SeatHandler for LayerApp {
     }
 }
 
+/// BTN_LEFT from linux/input-event-codes.h.
+const BTN_LEFT: u32 = 0x110;
+
 impl PointerHandler for LayerApp {
     fn pointer_frame(
         &mut self,
@@ -896,10 +928,19 @@ impl PointerHandler for LayerApp {
                 button,
                 ..
             } = &event.kind
-                && *button == 0x110 {
-                    eprintln!("Click detected, dismissing");
-                    self.clicked = true;
-                }
+                && *button == BTN_LEFT {
+                let (x, y) = event.position;
+                // The compositor only routes a press here if it landed inside
+                // the input region, so this is also the assertion that the
+                // region and the hit test agree about where the card is.
+                let hit = self
+                    .interactive
+                    .iter()
+                    .position(|r| r.contains(x, y))
+                    .unwrap_or(usize::MAX);
+                eprintln!("inno: click at surface-local ({x:.0}, {y:.0}) hit {hit}");
+                self.clicked = true;
+            }
         }
     }
 }

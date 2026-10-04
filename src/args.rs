@@ -68,7 +68,7 @@ struct Cli {
     #[arg(short, long, value_name = "PATH")]
     log_file: Option<PathBuf>,
 
-    /// Disable DBus control interface
+    /// Disable DBus entirely: neither the control interface nor event listeners
     #[arg(long)]
     no_dbus: bool,
 

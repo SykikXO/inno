@@ -6,6 +6,42 @@ use std::f64::consts::PI;
 /// the card. A bounce travels upward, so the top half is the one in use.
 pub const V_PADDING: f64 = 120.0;
 
+/// A rectangle in surface-local coordinates, which is the unit `wl_region`
+/// rectangles and pointer event positions are both expressed in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rect {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+impl Rect {
+    /// Half-open on the far edges, matching the rectangle `wl_region.add` draws.
+    pub fn contains(&self, x: f64, y: f64) -> bool {
+        x >= self.x as f64
+            && x < (self.x + self.w) as f64
+            && y >= self.y as f64
+            && y < (self.y + self.h) as f64
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.w <= 0 || self.h <= 0
+    }
+}
+
+/// Where the visible card sits inside a `w`x`h` notification surface.
+///
+/// The surface is taller than the card by `V_PADDING` so a transition has room
+/// to move without the compositor clipping it. That is also why the compositor
+/// positions the surface rather than the card, and why a margin set on the
+/// surface does not line up with the card. Anything that needs to know where
+/// the card actually is, such as the input region, has to account for the split.
+pub fn card_rect(w: i32, h: i32, scale: f64) -> Rect {
+    let pad = (V_PADDING / 2.0 * scale).round() as i32;
+    Rect { x: 0, y: pad, w, h: (h - pad * 2).max(0) }
+}
+
 #[derive(Debug, Clone)]
 pub struct DrawState {
     pub frame: u32,
@@ -207,6 +243,68 @@ pub fn draw_with_signal(
 mod tests {
     use super::*;
     use crate::config;
+
+    #[test]
+    fn a_rect_contains_its_own_edges_but_not_the_far_ones() {
+        let r = Rect { x: 10, y: 20, w: 100, h: 50 };
+        assert!(r.contains(10.0, 20.0), "top-left corner is inside");
+        assert!(r.contains(109.9, 69.9), "just inside the far corner");
+        assert!(!r.contains(110.0, 20.0), "the far x edge is outside");
+        assert!(!r.contains(10.0, 70.0), "the far y edge is outside");
+        assert!(!r.contains(9.0, 20.0), "just before the near edge");
+    }
+
+    #[test]
+    fn a_zero_sized_rect_holds_nothing() {
+        assert!(Rect { x: 0, y: 0, w: 0, h: 40 }.is_empty());
+        assert!(Rect { x: 0, y: 0, w: 40, h: 0 }.is_empty());
+        assert!(!Rect { x: 0, y: 0, w: 1, h: 1 }.is_empty());
+    }
+
+    #[test]
+    fn the_card_is_the_surface_minus_the_transition_padding() {
+        // 120px of padding split evenly, so the card starts 60px down and the
+        // surface is 120px taller than the card.
+        let r = card_rect(200, 220, 1.0);
+        assert_eq!(r, Rect { x: 0, y: 60, w: 200, h: 100 });
+    }
+
+    #[test]
+    fn the_card_sits_where_the_drawing_code_puts_it() {
+        // The rect is derived from the surface size rather than from Layout, so
+        // it can drift from where the card is really drawn. Measure a real
+        // layout and check the two agree.
+        let cr = cairo::Context::new(
+            cairo::ImageSurface::create(cairo::Format::ARgb32, 1, 1).unwrap(),
+        )
+        .unwrap();
+        let config = config::AppConfig::default();
+        for scale in [0.5, 0.8, 1.0, 1.5, 2.0] {
+            let l = layout(&cr, "plug your pc in", &config, None, scale);
+            let r = card_rect(l.w, l.h, scale);
+            assert!(
+                r.contains(0.0, V_PADDING / 2.0 * scale + l.h_content / 2.0),
+                "the middle of the drawn card is inside the rect at scale {scale}"
+            );
+            assert!(
+                !r.contains(1.0, 1.0),
+                "the transparent padding above the card is outside the rect at scale {scale}"
+            );
+            assert!(
+                !r.contains(1.0, (l.h as f64) - 1.0),
+                "the transparent padding below the card is outside the rect at scale {scale}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_surface_taller_than_its_padding_still_yields_a_card() {
+        // Degenerate sizing must not underflow the height into a huge rect
+        // that would make the whole surface clickable again.
+        let r = card_rect(10, 4, 1.0);
+        assert_eq!(r.h, 0);
+        assert!(r.is_empty());
+    }
 
     #[test]
     fn test_draw_state_reset() {

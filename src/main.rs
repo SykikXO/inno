@@ -338,7 +338,7 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    if !test_all_animations && test_frame_anim.is_none() {
+    if enable_dbus && !test_all_animations && test_frame_anim.is_none() {
         tokio::spawn(async move {
             if let Err(e) = dbus::run_dbus_listener(tx, event_configs).await {
                 eprintln!("DBus error: {}", e);
