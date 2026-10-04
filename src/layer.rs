@@ -1,6 +1,6 @@
 use crate::animation::{AnimPlayer, TargetSize};
 use crate::config::AppConfig;
-use crate::config::{AnimAsset, DisplayMode, Signal, VAnchor};
+use crate::config::{AnimAsset, DisplayMode, HAnchor, OutputMode, Signal, VAnchor};
 use crate::draw;
 use crate::draw::{DrawState, Rect};
 use std::collections::HashMap;
@@ -211,6 +211,18 @@ pub struct LayerApp {
     pub clicked_action: Option<usize>,
     /// Set when the hovered action changed and the cached card is stale.
     pub hover_dirty: bool,
+    /// Whether the surface is showing a card or a full-screen banner. The two
+    /// need different anchors and different sizes, and both are double-buffered
+    /// layer-shell state, so switching is a matter of re-sending them.
+    pub mode: SurfaceMode,
+    /// The banner's buttons, in surface-local coordinates.
+    pub banner_buttons: Vec<Rect>,
+    /// The banner button the pointer is over.
+    pub hovered_banner_action: Option<usize>,
+    /// Set when a press landed on a banner button.
+    pub clicked_banner_action: Option<usize>,
+    /// The banner's layout from the last paint, for hit testing and diagnostics.
+    pub banner_panel: Option<Rect>,
 }
 
 impl LayerApp {
@@ -245,6 +257,11 @@ impl LayerApp {
             hovered_action: None,
             clicked_action: None,
             hover_dirty: false,
+            mode: SurfaceMode::Card,
+            banner_buttons: Vec::new(),
+            hovered_banner_action: None,
+            clicked_banner_action: None,
+            banner_panel: None,
             frame_cache: FrameCache::new(),
             anim_players: HashMap::new(),
             failed_animations: std::collections::HashSet::new(),
@@ -289,20 +306,15 @@ impl LayerApp {
             target_output.as_ref(),
         );
 
-        // Build anchor flags from config
-        let mut anchor = Anchor::empty();
-        match config.anchor.h {
-            HAnchor::Left => anchor |= Anchor::LEFT,
-            HAnchor::Right => anchor |= Anchor::RIGHT,
-            HAnchor::Center => {} // no horizontal anchor = centered
-        }
-        match config.anchor.v {
-            VAnchor::Top => anchor |= Anchor::TOP,
-            VAnchor::Bottom => anchor |= Anchor::BOTTOM,
-            VAnchor::Center => {} // no vertical anchor = centered
-        }
-
-        layer.set_anchor(anchor);
+        layer.set_anchor(Anchor::empty() | match config.anchor.h {
+            HAnchor::Left => Anchor::LEFT,
+            HAnchor::Right => Anchor::RIGHT,
+            HAnchor::Center => Anchor::empty(),
+        } | match config.anchor.v {
+            VAnchor::Top => Anchor::TOP,
+            VAnchor::Bottom => Anchor::BOTTOM,
+            VAnchor::Center => Anchor::empty(),
+        });
         let s = self.effective_scale(config);
         set_margins(&layer, config, s);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
@@ -444,6 +456,140 @@ impl LayerApp {
         self.committed_identity = false;
     }
 
+    /// Logical size of the output a banner should cover.
+    ///
+    /// Read from the output rather than waited for in a configure, so a banner
+    /// can be painted in one go instead of arriving as a 1x1 surface that fills
+    /// in a frame later. Falls back to the surface size the compositor last gave
+    /// us, which is right on the common single-output case.
+    pub fn output_size(&self, config: &AppConfig) -> (i32, i32) {
+        let outputs: Vec<_> = self.output_state.outputs().collect();
+        let info = outputs
+            .iter()
+            .find(|o| match &config.output {
+                OutputMode::Named(name) => self
+                    .output_state
+                    .info(o)
+                    .is_some_and(|i| i.model.contains(name) || i.make.contains(name)),
+                // A banner covers one output. With several attached and no name
+                // given, the first is the same one a card would be placed on.
+                _ => false,
+            })
+            .or_else(|| outputs.first())
+            .and_then(|o| self.output_state.info(o));
+        info.and_then(|i| i.logical_size)
+            .unwrap_or((self.width as i32, self.height as i32))
+    }
+
+    /// Puts the surface into card or banner mode.
+    ///
+    /// Anchors, margins and size are all double-buffered layer-shell state, so
+    /// they only take effect on the commit that follows. The caller has to paint
+    /// after this, not before, or it paints into the geometry of the other mode.
+    fn set_mode(&mut self, mode: SurfaceMode, config: &AppConfig) {
+        if self.mode == mode && self.layer_surface.is_some() {
+            return;
+        }
+        self.mode = mode;
+        let Some(layer) = self.layer_surface.as_ref() else { return };
+        match mode {
+            SurfaceMode::Banner => {
+                // All four edges: the surface becomes the output, which is what
+                // makes the scrim cover the screen. Margins are zeroed because a
+                // banner is the whole screen, not a card with breathing room.
+                layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+                layer.set_margin(0, 0, 0, 0);
+                self.committed_identity = false;
+            }
+            SurfaceMode::Card => {
+                layer.set_anchor(
+                    Anchor::empty()
+                        | match config.anchor.h {
+                            HAnchor::Left => Anchor::LEFT,
+                            HAnchor::Right => Anchor::RIGHT,
+                            HAnchor::Center => Anchor::empty(),
+                        }
+                        | match config.anchor.v {
+                            VAnchor::Top => Anchor::TOP,
+                            VAnchor::Bottom => Anchor::BOTTOM,
+                            VAnchor::Center => Anchor::empty(),
+                        },
+                );
+                set_margins(layer, config, self.effective_scale(config));
+                self.committed_identity = false;
+                self.banner_buttons.clear();
+                self.banner_panel = None;
+                self.hovered_banner_action = None;
+            }
+        }
+    }
+
+    /// Paints a full-screen banner and puts the surface into banner mode.
+    ///
+    /// The input region is the panel, not the surface, so the scrim does not
+    /// swallow clicks meant for the desktop behind it.
+    pub fn draw_banner_surface(
+        &mut self,
+        text: &str,
+        config: &AppConfig,
+        signal: Option<&Signal>,
+        _draw_state: &DrawState,
+    ) {
+        if self.layer_surface.is_none() || !self.configured {
+            return;
+        }
+        self.set_mode(SurfaceMode::Banner, config);
+
+        let scale = self.effective_scale(config);
+        let (w, h) = self.output_size(config);
+        if w <= 1 || h <= 1 {
+            return;
+        }
+        self.width = w as u32;
+        self.height = h as u32;
+
+        let Some((buffer, ptr, stride)) = self.allocate_buffer(w, h) else { return };
+        // The scrim and panel are opaque coverage, so there is no transition state
+        // to honour here: a banner is either up or it is not.
+        let layout = unsafe {
+            let surface = cairo::ImageSurface::create_for_data_unsafe(
+                ptr, cairo::Format::ARgb32, w, h, stride,
+            )
+            .expect("cairo surface");
+            let cr = cairo::Context::new(&surface).unwrap();
+            let layout = draw::draw_banner(
+                &cr, text, config, signal, w, h, scale, self.hovered_banner_action,
+            );
+            surface.flush();
+            layout
+        };
+        if self.banner_panel != Some(layout.panel) || self.banner_buttons != layout.buttons {
+            eprintln!(
+                "inno: banner panel {:?} buttons {:?} in surface-local coordinates",
+                layout.panel, layout.buttons
+            );
+        }
+        self.banner_panel = Some(layout.panel);
+        self.banner_buttons = layout.buttons;
+
+        // Only the panel is clickable. Everywhere else falls through to whatever
+        // is behind, which is the whole reason the region is the panel rather
+        // than the surface.
+        self.interactive = match self.banner_panel {
+            Some(p) if !p.is_empty() => vec![p],
+            _ => Vec::new(),
+        };
+        self.buttons.clear();
+        self.commit_buffer(&buffer);
+    }
+
+    /// Takes the surface out of banner mode and back to a card.
+    pub fn leave_banner(&mut self, config: &AppConfig) {
+        self.set_mode(SurfaceMode::Card, config);
+        self.clicked_banner_action = None;
+        self.hovered_banner_action = None;
+    }
+
     /// Declares which parts of this surface may take pointer input.
     ///
     /// A surface starts with an infinite input region, so without this a
@@ -455,7 +601,7 @@ impl LayerApp {
     /// 1x1 transparent pixel, still sitting in the middle of the screen, and it
     /// has no business intercepting a click there.
     fn apply_input_region(&self, surface: &wl_surface::WlSurface) {
-        let Ok(region) = Region::new(&self.compositor_state) else { eprintln!("PROBE Region::new FAILED"); return };
+        let Ok(region) = Region::new(&self.compositor_state) else { return };
         for r in self.interactive.iter().filter(|r| !r.is_empty()) {
             region.add(r.x, r.y, r.w, r.h);
         }
@@ -959,6 +1105,16 @@ impl SeatHandler for LayerApp {
 /// BTN_LEFT from linux/input-event-codes.h.
 const BTN_LEFT: u32 = 0x110;
 
+/// What the single notification surface is currently being used for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceMode {
+    /// A card sized to its content and placed where the config says.
+    Card,
+    /// A full-screen critical banner. The surface covers the output and only the
+    /// panel and its buttons take clicks.
+    Banner,
+}
+
 /// Which action, if any, a surface-local point lands on.
 fn action_at(buttons: &[Rect], x: f64, y: f64) -> Option<usize> {
     buttons.iter().position(|b| b.contains(x, y))
@@ -972,9 +1128,54 @@ impl PointerHandler for LayerApp {
         _pointer: &wl_pointer::WlPointer,
         events: &[smithay_client_toolkit::seat::pointer::PointerEvent],
     ) {
+        // One surface, two jobs. Pointer events do not say which one they are for,
+        // so the banner's buttons are checked first: a card is never showing at
+        // the same time, and an empty list cannot match.
+        let banner_buttons = self.banner_buttons.clone();
+        let is_banner = self.mode == SurfaceMode::Banner;
         let mut hover_changed = false;
         for event in events {
             let (x, y) = event.position;
+            if is_banner {
+                match &event.kind {
+                    smithay_client_toolkit::seat::pointer::PointerEventKind::Enter { .. }
+                    | smithay_client_toolkit::seat::pointer::PointerEventKind::Motion { .. } => {
+                        let now = action_at(&banner_buttons, x, y);
+                        if now != self.hovered_banner_action {
+                            self.hovered_banner_action = now;
+                            hover_changed = true;
+                        }
+                    }
+                    smithay_client_toolkit::seat::pointer::PointerEventKind::Leave { .. } => {
+                        if self.hovered_banner_action.take().is_some() {
+                            hover_changed = true;
+                        }
+                    }
+                    smithay_client_toolkit::seat::pointer::PointerEventKind::Press { button, .. }
+                        if *button == BTN_LEFT =>
+                    {
+                        let hit = action_at(&banner_buttons, x, y);
+                        let on_panel = self
+                            .banner_panel
+                            .is_some_and(|p| p.contains(x, y));
+                        eprintln!(
+                            "inno: banner click at ({x:.0}, {y:.0}) \
+                             on_panel={on_panel} action={hit:?}"
+                        );
+                        self.clicked_banner_action = hit;
+                        // Any press inside the panel wakes the main loop, which
+                        // decides whether it ran an action or dismissed. Gating
+                        // this on missing the buttons meant a button press was
+                        // recorded and then never acted on, because the loop only
+                        // looks when `clicked` is set.
+                        if on_panel {
+                            self.clicked = true;
+                        }
+                    }
+                    _ => {}
+                }
+                continue;
+            }
             match &event.kind {
                 smithay_client_toolkit::seat::pointer::PointerEventKind::Enter { .. }
                 | smithay_client_toolkit::seat::pointer::PointerEventKind::Motion { .. } => {

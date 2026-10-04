@@ -477,7 +477,11 @@ async fn main() -> anyhow::Result<()> {
             app.hover_dirty = false;
             if let Some(text) = state.current_text.clone() {
                 let signal = active_signal(&state, &config, current_test_signal.as_ref()).cloned();
-                app.draw_text_with_signal(&text, &config, signal.as_ref(), &state.draw_state);
+                if state.is_banner {
+                    app.draw_banner_surface(&text, &config, signal.as_ref(), &state.draw_state);
+                } else {
+                    app.draw_text_with_signal(&text, &config, signal.as_ref(), &state.draw_state);
+                }
             }
         }
 
@@ -487,6 +491,29 @@ async fn main() -> anyhow::Result<()> {
             // as the sound field, which already spawns a process named in this
             // config, and it is spawned without waiting so a slow command cannot
             // freeze the notification loop.
+            // A banner's buttons come first: it is full screen and may have no
+            // card behind it to fall back to.
+            if state.is_banner
+                && let Some(idx) = app.clicked_banner_action.take()
+                && let Some(command) = state
+                    .current_signal_idx
+                    .and_then(|i| config.signals.get(i))
+                    .and_then(|sig| sig.actions.get(idx))
+                    .map(|a| a.command.clone())
+            {
+                {
+                    println!("Running banner action '{command}'");
+                    tokio::task::spawn_blocking(move || {
+                        let _ = std::process::Command::new("sh")
+                            .arg("-c")
+                            .arg(&command)
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .spawn();
+                    });
+                    continue;
+                }
+            }
             if let Some(idx) = app.clicked_action.take()
                 && let Some(command) = state
                     .current_signal_idx
@@ -580,6 +607,7 @@ async fn main() -> anyhow::Result<()> {
                         duration: Some(30),
                         sound: None,
                         remind: None,
+                        banner: false,
                         actions: Vec::new(),
                     };
                     let text = config::format_text(
@@ -638,6 +666,7 @@ async fn main() -> anyhow::Result<()> {
                         duration: Some(10),
                         sound: None,
                         remind: None,
+                        banner: false,
                         actions: Vec::new(),
                     };
 

@@ -8,7 +8,7 @@ pub const V_PADDING: f64 = 120.0;
 
 /// A rectangle in surface-local coordinates, which is the unit `wl_region`
 /// rectangles and pointer event positions are both expressed in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Rect {
     pub x: i32,
     pub y: i32,
@@ -224,6 +224,189 @@ pub fn measure_text(text: &str, config: &AppConfig, signal: Option<&Signal>, sca
     let cr = cairo::Context::new(&dummy).unwrap();
     let l = layout(&cr, text, config, signal, scale);
     (l.w, l.h)
+}
+
+/// Where a banner's clickable parts ended up, in surface-local coordinates.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BannerLayout {
+    /// The centred panel. The input region is exactly this, so the scrim around
+    /// it does not swallow clicks meant for whatever is underneath.
+    pub panel: Rect,
+    pub buttons: Vec<Rect>,
+}
+
+/// Fraction of the output covered by the scrim behind a banner. Enough to read
+/// as a takeover, light enough to still see the desktop behind it.
+const BANNER_SCRIM: f64 = 0.62;
+/// Space between the panel and the edge of the output.
+const BANNER_MARGIN: f64 = 60.0;
+/// Panel width as a fraction of the output, capped so it stays readable rather
+/// than becoming a full-width band.
+const BANNER_PANEL_MAX: f64 = 640.0;
+const BANNER_PAD: f64 = 28.0;
+
+/// Lays out a full-screen banner and paints it: a scrim over the whole output, a
+/// panel in the middle carrying the message, and its buttons along the bottom
+/// right.
+///
+/// The panel is deliberately not the input region. A full-screen surface with an
+/// infinite input region would eat every click on the screen, which for something
+/// that looks like an alarm is worse than the thing it is alarming about.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_banner(
+    cr: &Context,
+    text: &str,
+    config: &AppConfig,
+    signal: Option<&Signal>,
+    out_w: i32,
+    out_h: i32,
+    scale: f64,
+    hovered: Option<usize>,
+) -> BannerLayout {
+    let (r_bg, g_bg, b_bg, a_bg) = config.bg_color;
+    let (r, g, b, a) = signal.map(|s| s.color).unwrap_or(config.text_color);
+    let actions = signal.map(|s| s.actions.as_slice()).unwrap_or(&[]);
+    let mut out = BannerLayout::default();
+
+    cr.set_operator(cairo::Operator::Source);
+    cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
+    cr.paint().unwrap();
+    cr.set_operator(cairo::Operator::Over);
+
+    // Scrim.
+    cr.set_source_rgba(0.0, 0.0, 0.0, BANNER_SCRIM);
+    cr.rectangle(0.0, 0.0, out_w as f64, out_h as f64);
+    cr.fill().unwrap();
+
+    cr.select_font_face(&config.font, config.font_slant, config.font_weight);
+
+    // Message, wrapped inside the panel.
+    let panel_w = ((out_w as f64 - 2.0 * BANNER_MARGIN * scale)
+        .min(BANNER_PANEL_MAX * scale)
+        .max(120.0 * scale)) as i32;
+    let headline_size = config.font_size * 1.7 * scale;
+    cr.set_font_size(headline_size);
+    let lines = wrap(cr, text, (panel_w as f64 - 2.0 * BANNER_PAD * scale).max(10.0));
+
+    let icon_h = signal
+        .filter(|s| !s.icon.is_empty())
+        .map(|s| s.icon_size * 2.2 * scale)
+        .unwrap_or(0.0);
+
+    // Buttons, measured before the panel so the panel can be sized around them.
+    let label_size = config.font_size * 1.15 * scale;
+    cr.set_font_size(label_size);
+    let mut widths = Vec::with_capacity(actions.len());
+    for act in actions {
+        let e = cr.text_extents(&act.label).unwrap();
+        widths.push((e.width() + BUTTON_PAD * 3.0 * scale).ceil());
+    }
+    let btn_h = BUTTON_ROW_H * 1.6 * scale;
+    let row_w: f64 = widths.iter().sum::<f64>()
+        + BUTTON_GAP * scale * (actions.len().saturating_sub(1)) as f64;
+
+    let line_h = headline_size * 1.35;
+    let panel_h = (BANNER_PAD * 2.0
+        + icon_h
+        + if icon_h > 0.0 { 10.0 * scale } else { 0.0 }
+        + line_h * lines.len() as f64
+        + if actions.is_empty() { 0.0 } else { 20.0 * scale + btn_h })
+        .ceil() as i32;
+
+    let px = ((out_w - panel_w) / 2).max(0);
+    let py = ((out_h - panel_h) / 2).max(0);
+    out.panel = Rect { x: px, y: py, w: panel_w, h: panel_h };
+
+    // Panel background.
+    cr.set_source_rgba(r_bg, g_bg, b_bg, a_bg.max(0.92));
+    rounded_rect(cr, px as f64, py as f64, panel_w as f64, panel_h as f64, 12.0 * scale);
+    cr.fill().unwrap();
+
+    // Icon, centred above the message.
+    let mut y = py as f64 + BANNER_PAD * scale;
+    if let Some(s) = signal.filter(|s| !s.icon.is_empty()) {
+        cr.set_source_rgba(r, g, b, a);
+        cr.set_font_size(s.icon_size * 2.2 * scale);
+        let ie = cr.text_extents(&s.icon).unwrap();
+        cr.move_to(
+            px as f64 + (panel_w as f64 - ie.width()) / 2.0 - ie.x_bearing(),
+            y + icon_h - ie.height() - ie.y_bearing(),
+        );
+        cr.show_text(&s.icon).unwrap();
+        y += icon_h + 10.0 * scale;
+    }
+
+    // Message, centred.
+    cr.set_source_rgba(r, g, b, a);
+    cr.set_font_size(headline_size);
+    for line in &lines {
+        let le = cr.text_extents(line).unwrap();
+        cr.move_to(
+            px as f64 + (panel_w as f64 - le.width()) / 2.0 - le.x_bearing(),
+            y + headline_size - le.y_bearing(),
+        );
+        cr.show_text(line).unwrap();
+        y += line_h;
+    }
+
+    // Buttons, along the bottom right of the panel.
+    if !actions.is_empty() {
+        let mut bx = px as f64 + panel_w as f64 - BANNER_PAD * scale - row_w;
+        let by = py as f64 + panel_h as f64 - BANNER_PAD * scale - btn_h;
+        for (i, act) in actions.iter().enumerate() {
+            let bw = widths[i];
+            let is_hover = hovered == Some(i);
+            // Primary first, then hovered, matching the card's buttons so the two
+            // do not disagree about which one is the one to press.
+            let fill = if i == 0 || is_hover { 1.0 } else { 0.16 };
+            cr.set_source_rgba(r, g, b, a * fill);
+            rounded_rect(cr, bx, by, bw, btn_h, btn_h / 2.0);
+            cr.fill().unwrap();
+
+            let fg = if i == 0 || is_hover { (r_bg, g_bg, b_bg, a_bg.max(0.92)) } else { (r, g, b, a) };
+            cr.set_source_rgba(fg.0, fg.1, fg.2, fg.3);
+            cr.set_font_size(label_size);
+            let le = cr.text_extents(&act.label).unwrap();
+            cr.move_to(
+                bx + (bw - le.width()) / 2.0 - le.x_bearing(),
+                by + btn_h / 2.0 - (le.height() / 2.0 + le.y_bearing()),
+            );
+            cr.show_text(&act.label).unwrap();
+
+            out.buttons.push(Rect {
+                x: bx.round() as i32,
+                y: by.round() as i32,
+                w: bw.round() as i32,
+                h: btn_h.round() as i32,
+            });
+            bx += bw + BUTTON_GAP * scale;
+        }
+    }
+
+    out
+}
+
+/// Greedy word wrap, so a long message stays inside the panel instead of running
+/// off the side of the screen.
+fn wrap(cr: &Context, text: &str, max_w: f64) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut cur = String::new();
+    for word in text.split_whitespace() {
+        let candidate = if cur.is_empty() { word.to_string() } else { format!("{cur} {word}") };
+        if cr.text_extents(&candidate).unwrap().width() <= max_w || cur.is_empty() {
+            cur = candidate;
+        } else {
+            lines.push(std::mem::take(&mut cur));
+            cur = word.to_string();
+        }
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
 }
 
 pub fn draw_with_signal(
@@ -768,6 +951,7 @@ mod tests {
             duration: Some(5),
             sound: None,
             remind: None,
+            banner: false,
             actions: Vec::new(),
         }
     }

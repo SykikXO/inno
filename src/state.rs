@@ -48,6 +48,12 @@ pub fn display_seconds(sig: &crate::config::Signal, config: &AppConfig) -> Optio
 
 /// The hide delay for a notification.
 pub fn notification_duration(sig: &crate::config::Signal, config: &AppConfig) -> std::time::Duration {
+    // A banner is the alarm, not a toast. It stays until it is acted on, because
+    // a critical battery warning that leaves the screen is the problem it exists
+    // to report.
+    if sig.banner {
+        return std::time::Duration::MAX;
+    }
     match display_seconds(sig, config) {
         None => std::time::Duration::MAX,
         Some(secs) => std::time::Duration::from_millis(
@@ -111,6 +117,28 @@ pub struct NotificationState {
     /// the only way to say "I have seen it" without waiting for the state to
     /// change.
     pub reminder: Option<Reminder>,
+    /// Whether what is on screen now is a full-screen banner rather than a card.
+    pub is_banner: bool,
+}
+
+/// The text to put on screen.
+///
+/// A banner uses its message as written. `general.format` exists to decorate a
+/// status line, appending the percentage and so on, and on a banner that is
+/// written copy rather than a status line it just appends a stray number to a
+/// sentence. `{message}` still expands, so a banner can still show what an event
+/// carried.
+pub fn display_text(
+    sig: &crate::config::Signal,
+    config: &AppConfig,
+    message: &str,
+    pct: Option<f64>,
+) -> String {
+    if sig.banner {
+        message.to_string()
+    } else {
+        format_text(&config.format, &sig.icon, message, pct)
+    }
 }
 
 /// A notification that repeats until something else happens to it.
@@ -152,6 +180,7 @@ impl NotificationState {
             prev_signal_msg: HashMap::new(),
             state_key_order: VecDeque::new(),
             reminder: None,
+            is_banner: false,
         }
     }
 
@@ -266,6 +295,18 @@ impl NotificationState {
         self.current_text = Some(text.to_string());
 
         self.reminder = reminder_for(sig_idx, sig);
+        self.is_banner = sig.banner;
+
+        if sig.banner {
+            app.draw_banner_surface(text, config, Some(sig), &self.draw_state);
+            self.animating = false;
+            return notification_duration(sig, config);
+        }
+        // Coming back from a banner, the surface has to be a card again before
+        // anything is measured against card geometry.
+        if app.mode == crate::layer::SurfaceMode::Banner {
+            app.leave_banner(config);
+        }
 
         // A frame animation wraps the procedural one, so a signal may name
         // both: `animation` supplies the transition, `animation_ref` the
@@ -305,7 +346,7 @@ impl NotificationState {
         pct: Option<f64>,
     ) -> std::time::Duration {
         let dynamic_msg = sig.message.replace("{message}", &notify_event.message);
-        let text = format_text(&config.format, &sig.icon, &dynamic_msg, pct);
+        let text = display_text(sig, config, &dynamic_msg, pct);
 
         if let Some(ref sound_path) = sig.sound {
             sound_worker.play(sound_path);
@@ -330,7 +371,7 @@ impl NotificationState {
         // Show the real battery level when one is known. A hardcoded placeholder
         // renders as a plausible reading, which is worse than showing nothing:
         // it looks like the daemon is reporting the wrong number.
-        let text = format_text(&config.format, &sig.icon, &sig.message, percentage);
+        let text = display_text(sig, config, &sig.message, percentage);
         self.show(app, config, sig, Some(sig_idx), &text)
     }
 
@@ -347,7 +388,7 @@ impl NotificationState {
         sig: &crate::config::Signal,
         pct: Option<f64>,
     ) -> std::time::Duration {
-        let text = format_text(&config.format, &sig.icon, &sig.message, pct);
+        let text = display_text(sig, config, &sig.message, pct);
         self.show(app, config, sig, Some(sig_idx), &text)
     }
 
@@ -449,6 +490,23 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
+    #[test]
+    fn a_banner_shows_its_message_without_the_status_line_decoration() {
+        let cfg = AppConfig { format: "{message} {percent}%".into(), ..Default::default() };
+        let plain = reminding(None);
+        let banner = Signal { banner: true, ..plain.clone() };
+        assert_eq!(
+            display_text(&banner, &cfg, "plug your pc in", Some(79.0)),
+            "plug your pc in",
+            "a banner is written copy, not a status line"
+        );
+        assert_eq!(
+            display_text(&plain, &cfg, "plug your pc in", Some(79.0)),
+            "plug your pc in 79%",
+            "a card keeps the configured format"
+        );
+    }
+
     fn reminding(every: Option<u64>) -> Signal {
         Signal { remind: every, ..signal(None) }
     }
@@ -512,6 +570,7 @@ mod tests {
             duration: Some(5),
             sound: None,
             remind: None,
+            banner: false,
             actions: Vec::new(),
         }
     }

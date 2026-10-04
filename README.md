@@ -168,6 +168,7 @@ background, and a 90px bottom margin.
 | | `animation_ref` | — | Name of an `[animations]` entry to play as the content |
 | | `duration` | derived | Seconds on screen. `0` stays until dismissed. Omitted derives it from the animation |
 | | `remind` | — | Seconds between repeats while this state persists. Omitted or `0` is off |
+| | `banner` | `false` | Take over the screen with a full-screen panel instead of a card |
 | | `sound` | — | Sound file, relative to the config file |
 | | `[[signal.action]]` | — | A button on the card: `label` to draw, `command` to run |
 
@@ -396,6 +397,40 @@ show takes over and a signal without `remind` cancels whatever was repeating.
 
 Measured from when the notification was last shown, not from when it was
 dismissed, so `remind` shorter than `duration` repeats without a gap.
+
+### The full-screen banner
+
+A signal marked `banner = true` takes over the screen: a scrim over everything, a
+panel in the middle with the message, and its buttons along the bottom right. It
+is for the states you cannot afford to miss.
+
+```toml
+[[signal]]
+message = "your battery is running low, plug your pc in"
+banner = true
+
+[[signal.action]]
+label = "Plug in"
+command = "hyprctl dispatch exec 'notify-send power getAC'"
+
+[[signal.action]]
+label = "Okay"
+command = "true"
+```
+
+It does not leave on its own. A critical battery warning that times out is the
+problem it exists to report, so it stays until it is clicked or its state
+changes, and `duration` is ignored.
+
+`general.format` is not applied to a banner. That format exists to decorate a
+status line by appending the percentage, and on a banner, which is written copy
+rather than a status line, it just appends a stray number to a sentence.
+`{message}` still expands, so a banner can show what an event carried.
+
+A full-screen surface normally swallows every click on the display, which for
+something shaped like an alarm is worse than the thing it is alarming about. So
+the input region is the panel, not the surface: the panel and its buttons work,
+and clicks anywhere else reach whatever is behind them.
 
 ### Action buttons
 
